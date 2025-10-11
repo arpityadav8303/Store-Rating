@@ -49,3 +49,5 @@ ratingSchema.pre('save', function(next) {
 
 module.exports = mongoose.model('Rating', ratingSchema);
 
+
+

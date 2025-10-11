@@ -1,5 +1,5 @@
 const express = require('express');
-const { query } = require('express-validator');
+const { query, validationResult } = require('express-validator');
 const Store = require('../models/Store');
 const Rating = require('../models/Rating');
 const User = require('../models/User');
@@ -7,28 +7,36 @@ const { protect, isStoreOwner } = require('../middleware/auth');
 
 const router = express.Router();
 
-// Apply authentication to all routes
+// All routes need authentication
 router.use(protect);
 
-// @desc    Get store owner dashboard
-// @route   GET /api/store-owner/dashboard
-// @access  Private (Store owners only)
-router.get('/dashboard', async (req, res) => {
-  try {
-    // Get store owned by the current user
+// Helper function to find store by owner
+const findStoreByOwner = async (userId, res) => {
     const store = await Store.findOne({ 
-      owner: req.user.id, 
+      owner: userId, 
       isActive: true 
     });
 
     if (!store) {
-      return res.status(404).json({
+      res.status(403).json({
         success: false,
-        message: 'No store found for this user'
+        message: 'Access denied: No active store found for this user.'
       });
+      return null;
+    }
+    return store;
+};
+
+// Get dashboard summary
+router.get('/dashboard', async (req, res) => {
+  try {
+    // Find store for this owner
+    const store = await findStoreByOwner(req.user.id, res);
+    if (!store) {
+      return;
     }
 
-    // Get rating statistics for the store
+    // Get rating statistics
     const ratingStats = await Rating.aggregate([
       { $match: { store: store._id } },
       {
@@ -48,11 +56,35 @@ router.get('/dashboard', async (req, res) => {
       }
     ]);
 
-    const stats = ratingStats.length > 0 ? ratingStats[0] : {
-      averageRating: 0,
-      totalRatings: 0,
-      ratings: []
-    };
+    let stats;
+    if (ratingStats.length > 0) {
+      stats = ratingStats[0];
+    } else {
+      stats = {
+        averageRating: 0,
+        totalRatings: 0,
+        ratings: []
+      };
+    }
+    
+    // Sort ratings by date to get recent ones
+    let allRatings = stats.ratings;
+    allRatings.sort(function(a, b) {
+      let dateA = a.createdAt.getTime();
+      let dateB = b.createdAt.getTime();
+      return dateB - dateA;
+    });
+    
+    // Get only first 5 ratings
+    let recentRatings = [];
+    for (let i = 0; i < 5 && i < allRatings.length; i++) {
+      recentRatings.push(allRatings[i]);
+    }
+
+    // Calculate average rating rounded
+    let averageRating = stats.averageRating * 10;
+    averageRating = Math.round(averageRating);
+    averageRating = averageRating / 10;
 
     res.json({
       success: true,
@@ -63,9 +95,9 @@ router.get('/dashboard', async (req, res) => {
           email: store.email,
           address: store.address
         },
-        averageRating: Math.round(stats.averageRating * 10) / 10,
+        averageRating: averageRating,
         totalRatings: stats.totalRatings,
-        recentRatings: stats.ratings.slice(-5).reverse() // Last 5 ratings
+        recentRatings: recentRatings
       }
     });
   } catch (error) {
@@ -78,9 +110,7 @@ router.get('/dashboard', async (req, res) => {
   }
 });
 
-// @desc    Get all ratings for store owner's store
-// @route   GET /api/store-owner/ratings
-// @access  Private (Store owners only)
+// Get all ratings for store
 router.get('/ratings', [
   query('page').optional().isInt({ min: 1 }).withMessage('Page must be a positive integer'),
   query('limit').optional().isInt({ min: 1, max: 100 }).withMessage('Limit must be between 1 and 100'),
@@ -88,6 +118,7 @@ router.get('/ratings', [
   query('sortOrder').optional().isIn(['asc', 'desc']).withMessage('Sort order must be asc or desc')
 ], async (req, res) => {
   try {
+    // Check validation errors
     const errors = validationResult(req);
     if (!errors.isEmpty()) {
       return res.status(400).json({
@@ -97,36 +128,58 @@ router.get('/ratings', [
       });
     }
 
-    // Get store owned by the current user
-    const store = await Store.findOne({ 
-      owner: req.user.id, 
-      isActive: true 
-    });
-
+    // Find store
+    const store = await findStoreByOwner(req.user.id, res);
     if (!store) {
-      return res.status(404).json({
-        success: false,
-        message: 'No store found for this user'
-      });
+      return;
     }
 
-    const page = parseInt(req.query.page) || 1;
-    const limit = parseInt(req.query.limit) || 10;
-    const sortBy = req.query.sortBy || 'createdAt';
-    const sortOrder = req.query.sortOrder === 'asc' ? 1 : -1;
+    // Get query parameters
+    let page = req.query.page;
+    if (!page) {
+      page = 1;
+    }
+    page = parseInt(page);
 
-    // Calculate pagination
-    const skip = (page - 1) * limit;
+    let limit = req.query.limit;
+    if (!limit) {
+      limit = 10;
+    }
+    limit = parseInt(limit);
 
-    // Get ratings for the store with pagination and sorting
+    let sortBy = req.query.sortBy;
+    if (!sortBy) {
+      sortBy = 'createdAt';
+    }
+
+    let sortOrder = req.query.sortOrder;
+    if (sortOrder === 'asc') {
+      sortOrder = 1;
+    } else {
+      sortOrder = -1;
+    }
+
+    // Calculate skip
+    let skip = (page - 1) * limit;
+
+    // Create sort object
+    let sortObj = {};
+    sortObj[sortBy] = sortOrder;
+
+    // Get ratings
     const ratings = await Rating.find({ store: store._id })
-      .sort({ [sortBy]: sortOrder })
+      .sort(sortObj)
       .skip(skip)
       .limit(limit)
       .populate('user', 'name email');
 
-    // Get total count
+    // Count total ratings
     const total = await Rating.countDocuments({ store: store._id });
+
+    // Calculate pagination info
+    let totalPages = Math.ceil(total / limit);
+    let hasNextPage = page < totalPages;
+    let hasPrevPage = page > 1;
 
     res.json({
       success: true,
@@ -137,13 +190,13 @@ router.get('/ratings', [
           email: store.email,
           address: store.address
         },
-        ratings,
+        ratings: ratings,
         pagination: {
           currentPage: page,
-          totalPages: Math.ceil(total / limit),
+          totalPages: totalPages,
           totalRatings: total,
-          hasNextPage: page < Math.ceil(total / limit),
-          hasPrevPage: page > 1
+          hasNextPage: hasNextPage,
+          hasPrevPage: hasPrevPage
         }
       }
     });
@@ -157,9 +210,7 @@ router.get('/ratings', [
   }
 });
 
-// @desc    Get users who rated the store
-// @route   GET /api/store-owner/users
-// @access  Private (Store owners only)
+// Get users who rated the store
 router.get('/users', [
   query('page').optional().isInt({ min: 1 }).withMessage('Page must be a positive integer'),
   query('limit').optional().isInt({ min: 1, max: 100 }).withMessage('Limit must be between 1 and 100'),
@@ -167,6 +218,7 @@ router.get('/users', [
   query('sortOrder').optional().isIn(['asc', 'desc']).withMessage('Sort order must be asc or desc')
 ], async (req, res) => {
   try {
+    // Check validation errors
     const errors = validationResult(req);
     if (!errors.isEmpty()) {
       return res.status(400).json({
@@ -176,36 +228,97 @@ router.get('/users', [
       });
     }
 
-    // Get store owned by the current user
-    const store = await Store.findOne({ 
-      owner: req.user.id, 
-      isActive: true 
-    });
-
+    // Find store
+    const store = await findStoreByOwner(req.user.id, res);
     if (!store) {
-      return res.status(404).json({
-        success: false,
-        message: 'No store found for this user'
-      });
+      return;
     }
 
-    const page = parseInt(req.query.page) || 1;
-    const limit = parseInt(req.query.limit) || 10;
-    const sortBy = req.query.sortBy || 'createdAt';
-    const sortOrder = req.query.sortOrder === 'asc' ? 1 : -1;
+    // Get query parameters
+    let page = req.query.page;
+    if (!page) {
+      page = 1;
+    }
+    page = parseInt(page);
+
+    let limit = req.query.limit;
+    if (!limit) {
+      limit = 10;
+    }
+    limit = parseInt(limit);
+
+    let sortBy = req.query.sortBy;
+    if (!sortBy) {
+      sortBy = 'createdAt';
+    }
+
+    let sortOrder = req.query.sortOrder;
+    if (sortOrder === 'asc') {
+      sortOrder = 1;
+    } else {
+      sortOrder = -1;
+    }
+
+    // Calculate skip
+    let skip = (page - 1) * limit;
+
+    // Build sort field for aggregation
+    let sortField = 'lastRating.' + sortBy;
+    let sortObject = {};
+    sortObject[sortField] = sortOrder;
+
+    // Get unique users who rated the store
+    const uniqueUserRatings = await Rating.aggregate([
+        { $match: { store: store._id } },
+        { 
+            $group: { 
+                _id: '$user', 
+                lastRating: { $last: '$$ROOT' },
+                ratingCount: { $sum: 1 } 
+            } 
+        },
+        { $sort: sortObject },
+        { $skip: skip },
+        { $limit: limit },
+        {
+            $lookup: {
+                from: 'users',
+                localField: '_id',
+                foreignField: '_id',
+                as: 'user'
+            }
+        },
+        { $unwind: '$user' },
+        { 
+            $project: {
+                _id: 0, 
+                name: '$user.name', 
+                email: '$user.email', 
+                address: '$user.address',
+                userId: '$_id',
+                lastRating: '$lastRating.rating',
+                lastReview: '$lastRating.review',
+                ratingCount: 1 
+            } 
+        }
+    ]);
+
+    // Count total unique users
+    const totalResult = await Rating.aggregate([
+        { $match: { store: store._id } },
+        { $group: { _id: '$user' } },
+        { $count: 'total' }
+    ]);
+    
+    let total = 0;
+    if (totalResult.length > 0) {
+      total = totalResult[0].total;
+    }
 
     // Calculate pagination
-    const skip = (page - 1) * limit;
-
-    // Get users who rated the store with their ratings
-    const ratings = await Rating.find({ store: store._id })
-      .populate('user', 'name email address')
-      .sort({ [sortBy]: sortOrder })
-      .skip(skip)
-      .limit(limit);
-
-    // Get total count
-    const total = await Rating.countDocuments({ store: store._id });
+    let totalPages = Math.ceil(total / limit);
+    let hasNextPage = page < totalPages;
+    let hasPrevPage = page > 1;
 
     res.json({
       success: true,
@@ -216,13 +329,13 @@ router.get('/users', [
           email: store.email,
           address: store.address
         },
-        users: ratings,
+        users: uniqueUserRatings,
         pagination: {
           currentPage: page,
-          totalPages: Math.ceil(total / limit),
+          totalPages: totalPages,
           totalUsers: total,
-          hasNextPage: page < Math.ceil(total / limit),
-          hasPrevPage: page > 1
+          hasNextPage: hasNextPage,
+          hasPrevPage: hasPrevPage
         }
       }
     });
@@ -236,25 +349,16 @@ router.get('/users', [
   }
 });
 
-// @desc    Get detailed rating statistics for store owner's store
-// @route   GET /api/store-owner/statistics
-// @access  Private (Store owners only)
+// Get detailed statistics
 router.get('/statistics', async (req, res) => {
   try {
-    // Get store owned by the current user
-    const store = await Store.findOne({ 
-      owner: req.user.id, 
-      isActive: true 
-    });
-
+    // Find store
+    const store = await findStoreByOwner(req.user.id, res);
     if (!store) {
-      return res.status(404).json({
-        success: false,
-        message: 'No store found for this user'
-      });
+      return;
     }
 
-    // Get detailed rating statistics
+    // Get rating statistics
     const ratingStats = await Rating.aggregate([
       { $match: { store: store._id } },
       {
@@ -265,18 +369,11 @@ router.get('/statistics', async (req, res) => {
           ratingDistribution: {
             $push: '$rating'
           },
-          ratings: {
-            $push: {
-              rating: '$rating',
-              review: '$review',
-              createdAt: '$createdAt',
-              updatedAt: '$updatedAt'
-            }
-          }
         }
       }
     ]);
 
+    // Check if no ratings exist
     if (ratingStats.length === 0) {
       return res.json({
         success: true,
@@ -297,22 +394,34 @@ router.get('/statistics', async (req, res) => {
       });
     }
 
-    const stats = ratingStats[0];
+    let stats = ratingStats[0];
     
-    // Calculate rating distribution
-    const ratingDistribution = {
-      1: 0, 2: 0, 3: 0, 4: 0, 5: 0
+    // Create rating distribution object
+    let ratingDistribution = {
+      1: 0, 
+      2: 0, 
+      3: 0, 
+      4: 0, 
+      5: 0
     };
     
-    stats.ratingDistribution.forEach(rating => {
+    // Count ratings for each value
+    for (let i = 0; i < stats.ratingDistribution.length; i++) {
+      let rating = stats.ratingDistribution[i];
       ratingDistribution[rating]++;
-    });
+    }
 
-    // Get recent ratings (last 10)
+    // Get recent ratings
     const recentRatings = await Rating.find({ store: store._id })
       .populate('user', 'name email')
       .sort({ createdAt: -1 })
-      .limit(10);
+      .limit(10)
+      .lean();
+
+    // Round average rating
+    let averageRating = stats.averageRating * 10;
+    averageRating = Math.round(averageRating);
+    averageRating = averageRating / 10;
 
     res.json({
       success: true,
@@ -323,10 +432,10 @@ router.get('/statistics', async (req, res) => {
           email: store.email,
           address: store.address
         },
-        averageRating: Math.round(stats.averageRating * 10) / 10,
+        averageRating: averageRating,
         totalRatings: stats.totalRatings,
-        ratingDistribution,
-        recentRatings
+        ratingDistribution: ratingDistribution,
+        recentRatings: recentRatings
       }
     });
   } catch (error) {
@@ -339,24 +448,16 @@ router.get('/statistics', async (req, res) => {
   }
 });
 
-// @desc    Get store owner's store information
-// @route   GET /api/store-owner/store
-// @access  Private (Store owners only)
+// Get store information
 router.get('/store', async (req, res) => {
   try {
-    const store = await Store.findOne({ 
-      owner: req.user.id, 
-      isActive: true 
-    }).populate('owner', 'name email');
-
+    // Find store
+    const store = await findStoreByOwner(req.user.id, res);
     if (!store) {
-      return res.status(404).json({
-        success: false,
-        message: 'No store found for this user'
-      });
+      return;
     }
 
-    // Get average rating
+    // Get rating statistics
     const ratingStats = await Rating.aggregate([
       { $match: { store: store._id } },
       {
@@ -368,9 +469,21 @@ router.get('/store', async (req, res) => {
       }
     ]);
 
-    const averageRating = ratingStats.length > 0 ? 
-      Math.round(ratingStats[0].averageRating * 10) / 10 : 0;
-    const totalRatings = ratingStats.length > 0 ? ratingStats[0].totalRatings : 0;
+    let averageRating = 0;
+    let totalRatings = 0;
+
+    if (ratingStats.length > 0) {
+      let avgRating = ratingStats[0].averageRating;
+      avgRating = avgRating * 10;
+      avgRating = Math.round(avgRating);
+      avgRating = avgRating / 10;
+      averageRating = avgRating;
+      
+      totalRatings = ratingStats[0].totalRatings;
+    }
+
+    // Get owner details
+    const owner = await User.findById(store.owner).select('name email');
 
     res.json({
       success: true,
@@ -380,9 +493,9 @@ router.get('/store', async (req, res) => {
           name: store.name,
           email: store.email,
           address: store.address,
-          owner: store.owner,
-          averageRating,
-          totalRatings,
+          owner: owner,
+          averageRating: averageRating,
+          totalRatings: totalRatings,
           createdAt: store.createdAt,
           updatedAt: store.updatedAt
         }
@@ -399,4 +512,3 @@ router.get('/store', async (req, res) => {
 });
 
 module.exports = router;
-

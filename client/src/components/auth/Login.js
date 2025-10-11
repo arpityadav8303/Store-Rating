@@ -5,7 +5,7 @@ import { useAuth } from '../../context/AuthContext';
 import { toast } from 'react-toastify';
 import LoadingSpinner from '../common/LoadingSpinner';
 
-const Login = () => {
+const Login = function() {
   const [formData, setFormData] = useState({
     email: '',
     password: ''
@@ -13,81 +13,116 @@ const Login = () => {
   const [loading, setLoading] = useState(false);
   const [errors, setErrors] = useState({});
 
-  const { login, user } = useAuth();
+  const authContext = useAuth();
+  const login = authContext.login;
+  const user = authContext.user;
+  
   const navigate = useNavigate();
   const location = useLocation();
 
-  // Redirect if already logged in
-  useEffect(() => {
+  // Check if user is already logged in
+  useEffect(function() {
     if (user) {
-      const from = location.state?.from?.pathname || getDashboardPath();
-      navigate(from, { replace: true });
+      let dashboardPath = getDashboardPath();
+      let from = location.state;
+      
+      if (from && from.from && from.from.pathname) {
+        dashboardPath = from.from.pathname;
+      }
+      
+      navigate(dashboardPath, { replace: true });
     }
   }, [user, navigate, location]);
 
-  const getDashboardPath = () => {
-    switch (user?.role) {
-      case 'admin':
-        return '/admin/dashboard';
-      case 'store_owner':
-        return '/store-owner/dashboard';
-      case 'user':
-        return '/user/stores';
-      default:
-        return '/login';
+  const getDashboardPath = function() {
+    let userRole = '';
+    if (user) {
+      userRole = user.role;
     }
-  };
-
-  const handleChange = (e) => {
-    const { name, value } = e.target;
-    setFormData(prev => ({
-      ...prev,
-      [name]: value
-    }));
     
-    // Clear error when user starts typing
-    if (errors[name]) {
-      setErrors(prev => ({
-        ...prev,
-        [name]: ''
-      }));
+    let path = '/login';
+    
+    if (userRole === 'admin') {
+      path = '/admin/dashboard';
+    } else if (userRole === 'store_owner') {
+      path = '/store-owner/dashboard';
+    } else if (userRole === 'user') {
+      path = '/user/stores';
+    }
+    
+    return path;
+  };
+
+  const handleChange = function(e) {
+    const fieldName = e.target.name;
+    const fieldValue = e.target.value;
+    
+    const newFormData = {...formData};
+    newFormData[fieldName] = fieldValue;
+    setFormData(newFormData);
+    
+    // Clear error when user types
+    if (errors[fieldName]) {
+      const newErrors = {...errors};
+      newErrors[fieldName] = '';
+      setErrors(newErrors);
     }
   };
 
-  const validateForm = () => {
+  const validateForm = function() {
     const newErrors = {};
 
+    // Check email
     if (!formData.email) {
       newErrors.email = 'Email is required';
-    } else if (!/\S+@\S+\.\S+/.test(formData.email)) {
-      newErrors.email = 'Please enter a valid email address';
+    } else {
+      const emailPattern = /\S+@\S+\.\S+/;
+      const isValidEmail = emailPattern.test(formData.email);
+      if (!isValidEmail) {
+        newErrors.email = 'Please enter a valid email address';
+      }
     }
 
+    // Check password
     if (!formData.password) {
       newErrors.password = 'Password is required';
     }
 
     setErrors(newErrors);
-    return Object.keys(newErrors).length === 0;
+    
+    const errorKeys = Object.keys(newErrors);
+    if (errorKeys.length === 0) {
+      return true;
+    } else {
+      return false;
+    }
   };
 
-  const handleSubmit = async (e) => {
+  const handleSubmit = async function(e) {
     e.preventDefault();
 
-    if (!validateForm()) {
+    const isValid = validateForm();
+    if (!isValid) {
       return;
     }
 
     setLoading(true);
+    
     try {
-      const result = await login(formData.email, formData.password);
+      const email = formData.email;
+      const password = formData.password;
+      const result = await login(email, password);
       
       if (result.success) {
         toast.success('Login successful!');
         const dashboardPath = getDashboardPath();
         navigate(dashboardPath, { replace: true });
       } else {
-        toast.error(result.message || 'Login failed');
+        let errorMessage = 'Login failed';
+        if (result.message) {
+          errorMessage = result.message;
+        }
+        toast.error(errorMessage);
       }
     } catch (error) {
       toast.error('An error occurred during login');

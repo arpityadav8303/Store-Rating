@@ -6,20 +6,25 @@ const { protect } = require('../middleware/auth');
 
 const router = express.Router();
 
-// Generate JWT token
+// Function to generate JWT token
 const generateToken = (id) => {
-  return jwt.sign({ id }, process.env.JWT_SECRET, {
-    expiresIn: process.env.JWT_EXPIRE || '7d',
+  let expiresIn = process.env.JWT_EXPIRE;
+  if (!expiresIn) {
+    expiresIn = '7d';
+  }
+  
+  const token = jwt.sign({ id }, process.env.JWT_SECRET, {
+    expiresIn: expiresIn,
   });
+  
+  return token;
 };
 
-// @desc    Register user
-// @route   POST /api/auth/register
-// @access  Public
+// Register new user
 router.post('/register', [
   body('name')
-    .isLength({ min: 20, max: 60 })
-    .withMessage('Name must be between 20 and 60 characters'),
+    .isLength({ min: 3, max: 60 }) 
+    .withMessage('Name must be between 3 and 60 characters'),
   body('email')
     .isEmail()
     .withMessage('Please provide a valid email'),
@@ -37,6 +42,7 @@ router.post('/register', [
     .withMessage('Role must be admin, user, or store_owner')
 ], async (req, res) => {
   try {
+    // Check for validation errors
     const errors = validationResult(req);
     if (!errors.isEmpty()) {
       return res.status(400).json({
@@ -46,10 +52,15 @@ router.post('/register', [
       });
     }
 
-    const { name, email, password, address, role } = req.body;
+    // Get data from request body
+    const name = req.body.name;
+    const email = req.body.email;
+    const password = req.body.password;
+    const address = req.body.address;
+    const role = req.body.role;
 
     // Check if user already exists
-    const existingUser = await User.findOne({ email });
+    const existingUser = await User.findOne({ email: email });
     if (existingUser) {
       return res.status(400).json({
         success: false,
@@ -57,22 +68,30 @@ router.post('/register', [
       });
     }
 
-    // Create user
+    // Set role - default to user if not provided
+    let userRole = role;
+    if (!userRole) {
+      userRole = 'user';
+    }
+
+    // Create new user
     const user = await User.create({
-      name,
-      email,
-      password,
-      address,
-      role: role || 'user' // Default to 'user' if no role specified
+      name: name,
+      email: email,
+      password: password,
+      address: address,
+      role: userRole,
+      isActive: true
     });
 
     // Generate token
     const token = generateToken(user._id);
 
+    // Send response
     res.status(201).json({
       success: true,
       message: 'User registered successfully',
-      token,
+      token: token,
       user: {
         id: user._id,
         name: user.name,
@@ -91,9 +110,7 @@ router.post('/register', [
   }
 });
 
-// @desc    Login user
-// @route   POST /api/auth/login
-// @access  Public
+// Login user
 router.post('/login', [
   body('email')
     .isEmail()
@@ -103,6 +120,7 @@ router.post('/login', [
     .withMessage('Password is required')
 ], async (req, res) => {
   try {
+    // Check validation errors
     const errors = validationResult(req);
     if (!errors.isEmpty()) {
       return res.status(400).json({
@@ -112,10 +130,13 @@ router.post('/login', [
       });
     }
 
-    const { email, password } = req.body;
+    // Get email and password from request
+    const email = req.body.email;
+    const password = req.body.password;
 
-    // Check if user exists
-    const user = await User.findOne({ email }).select('+password');
+    // Find user by email - include password field
+    const user = await User.findOne({ email: email }).select('+password');
+    
     if (!user) {
       return res.status(401).json({
         success: false,
@@ -131,8 +152,9 @@ router.post('/login', [
       });
     }
 
-    // Check password
+    // Compare password
     const isPasswordValid = await user.comparePassword(password);
+    
     if (!isPasswordValid) {
       return res.status(401).json({
         success: false,
@@ -143,10 +165,11 @@ router.post('/login', [
     // Generate token
     const token = generateToken(user._id);
 
+    // Send success response
     res.json({
       success: true,
       message: 'Login successful',
-      token,
+      token: token,
       user: {
         id: user._id,
         name: user.name,
@@ -165,12 +188,20 @@ router.post('/login', [
   }
 });
 
-// @desc    Get current user
-// @route   GET /api/auth/me
-// @access  Private
+// Get current user info
 router.get('/me', protect, async (req, res) => {
   try {
+    // Find user by ID
     const user = await User.findById(req.user.id);
+    
+    if (!user) {
+      return res.status(404).json({
+        success: false,
+        message: 'User not found'
+      });
+    }
+
+    // Send user data
     res.json({
       success: true,
       user: {
@@ -191,9 +222,7 @@ router.get('/me', protect, async (req, res) => {
   }
 });
 
-// @desc    Update password
-// @route   PUT /api/auth/update-password
-// @access  Private
+// Update password
 router.put('/update-password', [
   protect,
   body('currentPassword')
@@ -206,6 +235,7 @@ router.put('/update-password', [
     .withMessage('New password must contain at least one uppercase letter and one special character')
 ], async (req, res) => {
   try {
+    // Check validation errors
     const errors = validationResult(req);
     if (!errors.isEmpty()) {
       return res.status(400).json({
@@ -215,10 +245,13 @@ router.put('/update-password', [
       });
     }
 
-    const { currentPassword, newPassword } = req.body;
+    // Get passwords from request
+    const currentPassword = req.body.currentPassword;
+    const newPassword = req.body.newPassword;
 
-    // Get user with password
+    // Find user with password field
     const user = await User.findById(req.user.id).select('+password');
+    
     if (!user) {
       return res.status(404).json({
         success: false,
@@ -226,8 +259,9 @@ router.put('/update-password', [
       });
     }
 
-    // Check current password
+    // Verify current password
     const isCurrentPasswordValid = await user.comparePassword(currentPassword);
+    
     if (!isCurrentPasswordValid) {
       return res.status(400).json({
         success: false,
@@ -235,10 +269,19 @@ router.put('/update-password', [
       });
     }
 
+    // Check if new password is different
+    if (currentPassword === newPassword) {
+      return res.status(400).json({
+        success: false,
+        message: 'New password must be different from current password'
+      });
+    }
+
     // Update password
     user.password = newPassword;
     await user.save();
 
+    // Send success response
     res.json({
       success: true,
       message: 'Password updated successfully'
@@ -253,12 +296,9 @@ router.put('/update-password', [
   }
 });
 
-// @desc    Logout user
-// @route   POST /api/auth/logout
-// @access  Private
-router.post('/logout', protect, (req, res) => {
-  // Since we're using JWT, logout is handled on the client side
-  // by removing the token from storage
+// Logout user
+router.post('/logout', protect, function(req, res) {
+  // Logout is handled on client side by removing token
   res.json({
     success: true,
     message: 'Logged out successfully'

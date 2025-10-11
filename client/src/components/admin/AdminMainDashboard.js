@@ -51,30 +51,6 @@ const AdminMainDashboard = () => {
     );
   }
 
-  const statCards = [
-    {
-      title: 'Total Users',
-      value: stats.totalUsers,
-      icon: '👥',
-      color: 'primary',
-      description: 'Registered users on the platform'
-    },
-    {
-      title: 'Total Stores',
-      value: stats.totalStores,
-      icon: '🏪',
-      color: 'success',
-      description: 'Stores registered on the platform'
-    },
-    {
-      title: 'Total Ratings',
-      value: stats.totalRatings,
-      icon: '⭐',
-      color: 'warning',
-      description: 'Ratings submitted by users'
-    }
-  ];
-
   return (
     <Container fluid className="py-4">
       <Row>
@@ -89,24 +65,47 @@ const AdminMainDashboard = () => {
       </Row>
 
       <Row className="g-4 mb-4">
-        {statCards.map((stat, index) => (
-          <Col key={index} md={4}>
-            <Card className="stat-card h-100 border-0 shadow-sm">
-              <Card.Body className="text-center">
-                <div className="mb-3">
-                  <span style={{ fontSize: '3rem' }}>{stat.icon}</span>
-                </div>
-                <h3 className={`text-${stat.color} mb-2`}>
-                  {stat.value.toLocaleString()}
-                </h3>
-                <h5 className="card-title">{stat.title}</h5>
-                <p className="card-text text-muted small">
-                  {stat.description}
-                </p>
-              </Card.Body>
-            </Card>
-          </Col>
-        ))}
+        <Col md={4}>
+          <Card className="stat-card h-100 border-0 shadow-sm">
+            <Card.Body className="text-center">
+              <h3 className="text-primary mb-2">
+                {stats.totalUsers}
+              </h3>
+              <h5 className="card-title">Total Users</h5>
+              <p className="card-text text-muted small">
+                Registered users on the platform
+              </p>
+            </Card.Body>
+          </Card>
+        </Col>
+
+        <Col md={4}>
+          <Card className="stat-card h-100 border-0 shadow-sm">
+            <Card.Body className="text-center">
+              <h3 className="text-success mb-2">
+                {stats.totalStores}
+              </h3>
+              <h5 className="card-title">Total Stores</h5>
+              <p className="card-text text-muted small">
+                Stores registered on the platform
+              </p>
+            </Card.Body>
+          </Card>
+        </Col>
+
+        <Col md={4}>
+          <Card className="stat-card h-100 border-0 shadow-sm">
+            <Card.Body className="text-center">
+              <h3 className="text-warning mb-2">
+                {stats.totalRatings}
+              </h3>
+              <h5 className="card-title">Total Ratings</h5>
+              <p className="card-text text-muted small">
+                Ratings submitted by users
+              </p>
+            </Card.Body>
+          </Card>
+        </Col>
       </Row>
 
       <Row>
@@ -120,9 +119,6 @@ const AdminMainDashboard = () => {
                 <Col md={4}>
                   <Card className="h-100 border-0 bg-light">
                     <Card.Body className="text-center">
-                      <div className="mb-3">
-                        <i className="bi bi-people" style={{ fontSize: '2rem', color: '#0d6efd' }}></i>
-                      </div>
                       <h6>Manage Users</h6>
                       <p className="small text-muted mb-3">
                         View, add, edit, and manage all users
@@ -136,9 +132,6 @@ const AdminMainDashboard = () => {
                 <Col md={4}>
                   <Card className="h-100 border-0 bg-light">
                     <Card.Body className="text-center">
-                      <div className="mb-3">
-                        <i className="bi bi-shop" style={{ fontSize: '2rem', color: '#198754' }}></i>
-                      </div>
                       <h6>Manage Stores</h6>
                       <p className="small text-muted mb-3">
                         View, add, edit, and manage all stores
@@ -152,9 +145,6 @@ const AdminMainDashboard = () => {
                 <Col md={4}>
                   <Card className="h-100 border-0 bg-light">
                     <Card.Body className="text-center">
-                      <div className="mb-3">
-                        <i className="bi bi-graph-up" style={{ fontSize: '2rem', color: '#fd7e14' }}></i>
-                      </div>
                       <h6>Analytics</h6>
                       <p className="small text-muted mb-3">
                         View platform statistics and reports
@@ -197,15 +187,12 @@ const AdminMainDashboard = () => {
                   <h6>Recent Activity</h6>
                   <div className="text-muted">
                     <p className="small mb-1">
-                      <i className="bi bi-clock me-1"></i>
                       Dashboard last updated: {new Date().toLocaleString()}
                     </p>
                     <p className="small mb-1">
-                      <i className="bi bi-activity me-1"></i>
                       System status: <span className="text-success">Online</span>
                     </p>
                     <p className="small mb-0">
-                      <i className="bi bi-shield-check me-1"></i>
                       Security: <span className="text-success">Protected</span>
                     </p>
                   </div>
@@ -220,4 +207,3 @@ const AdminMainDashboard = () => {
 };
 
 export default AdminMainDashboard;
-

@@ -5,7 +5,8 @@ const userSchema = new mongoose.Schema({
   name: {
     type: String,
     required: [true, 'Name is required'],
-    minlength: [20, 'Name must be at least 20 characters'],
+    
+    minlength: [3, 'Name must be at least 3 characters'], 
     maxlength: [60, 'Name cannot exceed 60 characters'],
     trim: true
   },
@@ -23,14 +24,8 @@ const userSchema = new mongoose.Schema({
     type: String,
     required: [true, 'Password is required'],
     minlength: [8, 'Password must be at least 8 characters'],
-    maxlength: [16, 'Password cannot exceed 16 characters'],
-    validate: {
-      validator: function(v) {
-        // At least one uppercase letter and one special character
-        return /^(?=.*[A-Z])(?=.*[!@#$%^&*()_+\-=\[\]{};':"\\|,.<>\/?]).+$/.test(v);
-      },
-      message: 'Password must contain at least one uppercase letter and one special character'
-    }
+    maxlength: [128, 'Password cannot exceed 128 characters'],
+    select: false 
   },
   address: {
     type: String,
@@ -57,9 +52,40 @@ const userSchema = new mongoose.Schema({
   }
 });
 
-// Hash password before saving
+
+userSchema.pre('validate', function(next) {
+  if (this.isModified('password') && this.password) {
+    
+    const isBcryptHash = /^\$2[ayb]\$.{56}$/.test(this.password);
+    
+    if (!isBcryptHash) {
+      const passwordRegex = /^(?=.*[A-Z])(?=.*[!@#$%^&*()_+\-=\[\]{};':"\\|,.<>\/?]).+$/;
+      
+      
+      if (!passwordRegex.test(this.password)) {
+        this.invalidate('password', 'Password must contain at least one uppercase letter and one special character');
+      }
+      
+      
+      if (this.password.length < 8 || this.password.length > 16) {
+        this.invalidate('password', 'Password must be between 8 and 16 characters');
+      }
+    }
+  }
+  next();
+});
+
+
 userSchema.pre('save', async function(next) {
-  if (!this.isModified('password')) return next();
+  if (!this.isModified('password')) {
+    return next();
+  }
+  
+  
+  const isBcryptHash = /^\$2[ayb]\$.{56}$/.test(this.password);
+  if (isBcryptHash) {
+    return next();
+  }
   
   try {
     const salt = await bcrypt.genSalt(12);
@@ -70,18 +96,18 @@ userSchema.pre('save', async function(next) {
   }
 });
 
-// Update updatedAt field before saving
 userSchema.pre('save', function(next) {
   this.updatedAt = Date.now();
   next();
 });
 
-// Compare password method
+
 userSchema.methods.comparePassword = async function(candidatePassword) {
+ 
   return await bcrypt.compare(candidatePassword, this.password);
 };
 
-// Remove password from JSON output
+
 userSchema.methods.toJSON = function() {
   const user = this.toObject();
   delete user.password;

@@ -7,25 +7,28 @@ const { protect, isAdmin } = require('../middleware/auth');
 
 const router = express.Router();
 
-// Apply authentication and admin authorization to all routes
+// All routes need authentication and admin access
 router.use(protect);
 router.use(isAdmin);
 
-// @desc    Get admin dashboard statistics
-// @route   GET /api/admin/dashboard
-// @access  Private (Admin only)
+// Get admin dashboard statistics
 router.get('/dashboard', async (req, res) => {
   try {
+    // Count active users
     const totalUsers = await User.countDocuments({ isActive: true });
+    
+    // Count active stores
     const totalStores = await Store.countDocuments({ isActive: true });
+    
+    // Count all ratings
     const totalRatings = await Rating.countDocuments();
 
     res.json({
       success: true,
       data: {
-        totalUsers,
-        totalStores,
-        totalRatings
+        totalUsers: totalUsers,
+        totalStores: totalStores,
+        totalRatings: totalRatings
       }
     });
   } catch (error) {
@@ -38,9 +41,7 @@ router.get('/dashboard', async (req, res) => {
   }
 });
 
-// @desc    Get all users with filtering and sorting
-// @route   GET /api/admin/users
-// @access  Private (Admin only)
+// Get all users with filtering and sorting
 router.get('/users', [
   query('page').optional().isInt({ min: 1 }).withMessage('Page must be a positive integer'),
   query('limit').optional().isInt({ min: 1, max: 100 }).withMessage('Limit must be between 1 and 100'),
@@ -50,6 +51,7 @@ router.get('/users', [
   query('role').optional().isIn(['admin', 'user', 'store_owner']).withMessage('Invalid role filter')
 ], async (req, res) => {
   try {
+    // Check validation errors
     const errors = validationResult(req);
     if (!errors.isEmpty()) {
       return res.status(400).json({
@@ -59,18 +61,41 @@ router.get('/users', [
       });
     }
 
-    const page = parseInt(req.query.page) || 1;
-    const limit = parseInt(req.query.limit) || 10;
-    const sortBy = req.query.sortBy || 'createdAt';
-    const sortOrder = req.query.sortOrder === 'asc' ? 1 : -1;
-    const search = req.query.search;
-    const role = req.query.role;
+    // Get query parameters
+    let page = req.query.page;
+    if (!page) {
+      page = 1;
+    }
+    page = parseInt(page);
 
-    // Build filter object
-    let filter = { isActive: true };
-    
+    let limit = req.query.limit;
+    if (!limit) {
+      limit = 10;
+    }
+    limit = parseInt(limit);
+
+    let sortBy = req.query.sortBy;
+    if (!sortBy) {
+      sortBy = 'createdAt';
+    }
+
+    let sortOrder = req.query.sortOrder;
+    if (sortOrder === 'asc') {
+      sortOrder = 1;
+    } else {
+      sortOrder = -1;
+    }
+
+    let search = req.query.search;
+    let role = req.query.role;
+
+    // Build filter
+    let filter = {};
+
     if (role) {
       filter.role = role;
+    } else {
+      filter.isActive = true;
     }
 
     if (search) {
@@ -81,29 +106,83 @@ router.get('/users', [
       ];
     }
 
-    // Calculate pagination
-    const skip = (page - 1) * limit;
+    // Calculate skip
+    let skip = (page - 1) * limit;
 
-    // Get users with pagination and sorting
+    // Create sort object
+    let sortObj = {};
+    sortObj[sortBy] = sortOrder;
+
+    // Get users
     const users = await User.find(filter)
-      .sort({ [sortBy]: sortOrder })
+      .sort(sortObj)
       .skip(skip)
       .limit(limit)
-      .populate('stores', 'name email address')
       .select('-password');
 
+    // Add stores for store owners
+    let usersWithStores = [];
+    for (let i = 0; i < users.length; i++) {
+      let user = users[i];
+      let userObj = user.toObject();
+      
+      if (user.role === 'store_owner') {
+        const stores = await Store.find({ owner: user._id, isActive: true })
+          .select('name email address')
+          .lean();
+        
+        // Get rating for each store
+        for (let j = 0; j < stores.length; j++) {
+          let store = stores[j];
+          
+          const ratingStats = await Rating.aggregate([
+            { $match: { store: store._id } },
+            {
+              $group: {
+                _id: '$store',
+                averageRating: { $avg: '$rating' },
+                totalRatings: { $sum: 1 }
+              }
+            }
+          ]);
+          
+          if (ratingStats.length > 0) {
+            let avgRating = ratingStats[0].averageRating;
+            avgRating = avgRating * 10;
+            avgRating = Math.round(avgRating);
+            avgRating = avgRating / 10;
+            store.averageRating = avgRating;
+            store.totalRatings = ratingStats[0].totalRatings;
+          } else {
+            store.averageRating = 0;
+            store.totalRatings = 0;
+          }
+        }
+        
+        userObj.stores = stores;
+      }
+      
+      usersWithStores.push(userObj);
+    }
+
+    // Count total users
     const total = await User.countDocuments(filter);
+
+    // Calculate pagination
+    let totalPages = Math.ceil(total / limit);
+    let hasNextPage = page < totalPages;
+    let hasPrevPage = page > 1;
 
     res.json({
       success: true,
       data: {
-        users,
+        users: usersWithStores,
         pagination: {
           currentPage: page,
-          totalPages: Math.ceil(total / limit),
+          totalPages: totalPages,
           totalUsers: total,
-          hasNextPage: page < Math.ceil(total / limit),
-          hasPrevPage: page > 1
+          hasNextPage: hasNextPage,
+          hasPrevPage: hasPrevPage
         }
       }
     });
@@ -117,9 +196,7 @@ router.get('/users', [
   }
 });
 
-// @desc    Get all stores with filtering and sorting
-// @route   GET /api/admin/stores
-// @access  Private (Admin only)
+// Get all stores with filtering and sorting
 router.get('/stores', [
   query('page').optional().isInt({ min: 1 }).withMessage('Page must be a positive integer'),
   query('limit').optional().isInt({ min: 1, max: 100 }).withMessage('Limit must be between 1 and 100'),
@@ -128,6 +205,7 @@ router.get('/stores', [
   query('search').optional().isString().withMessage('Search must be a string')
 ], async (req, res) => {
   try {
+    // Check validation errors
     const errors = validationResult(req);
     if (!errors.isEmpty()) {
       return res.status(400).json({
@@ -137,13 +215,34 @@ router.get('/stores', [
       });
     }
 
-    const page = parseInt(req.query.page) || 1;
-    const limit = parseInt(req.query.limit) || 10;
-    const sortBy = req.query.sortBy || 'createdAt';
-    const sortOrder = req.query.sortOrder === 'asc' ? 1 : -1;
-    const search = req.query.search;
+    // Get query parameters
+    let page = req.query.page;
+    if (!page) {
+      page = 1;
+    }
+    page = parseInt(page);
 
-    // Build filter object
+    let limit = req.query.limit;
+    if (!limit) {
+      limit = 10;
+    }
+    limit = parseInt(limit);
+
+    let sortBy = req.query.sortBy;
+    if (!sortBy) {
+      sortBy = 'createdAt';
+    }
+
+    let sortOrder = req.query.sortOrder;
+    if (sortOrder === 'asc') {
+      sortOrder = 1;
+    } else {
+      sortOrder = -1;
+    }
+
+    let search = req.query.search;
+
+    // Build filter
     let filter = { isActive: true };
 
     if (search) {
@@ -154,31 +253,72 @@ router.get('/stores', [
       ];
     }
 
-    // Calculate pagination
-    const skip = (page - 1) * limit;
+    // Calculate skip
+    let skip = (page - 1) * limit;
 
-    // Get stores with pagination, sorting, and populate owner info
+    // Create sort object
+    let sortObj = {};
+    sortObj[sortBy] = sortOrder;
+
+    // Get stores
     const stores = await Store.find(filter)
-      .sort({ [sortBy]: sortOrder })
+      .sort(sortObj)
       .skip(skip)
       .limit(limit)
       .populate('owner', 'name email')
-      .populate('averageRating')
-      .populate('totalRatings');
+      .lean();
 
-    // Get total count
+    // Add ratings to each store
+    let storesWithRatings = [];
+    for (let i = 0; i < stores.length; i++) {
+      let store = stores[i];
+      
+      const ratingStats = await Rating.aggregate([
+        { $match: { store: store._id } },
+        {
+          $group: {
+            _id: '$store',
+            averageRating: { $avg: '$rating' },
+            totalRatings: { $sum: 1 }
+          }
+        }
+      ]);
+
+      let storeWithRating = { ...store };
+      
+      if (ratingStats.length > 0) {
+        let avgRating = ratingStats[0].averageRating;
+        avgRating = avgRating * 10;
+        avgRating = Math.round(avgRating);
+        avgRating = avgRating / 10;
+        storeWithRating.averageRating = avgRating;
+        storeWithRating.totalRatings = ratingStats[0].totalRatings;
+      } else {
+        storeWithRating.averageRating = 0;
+        storeWithRating.totalRatings = 0;
+      }
+      
+      storesWithRatings.push(storeWithRating);
+    }
+
+    // Count total stores
     const total = await Store.countDocuments(filter);
+
+    // Calculate pagination
+    let totalPages = Math.ceil(total / limit);
+    let hasNextPage = page < totalPages;
+    let hasPrevPage = page > 1;
 
     res.json({
       success: true,
       data: {
-        stores,
+        stores: storesWithRatings,
         pagination: {
           currentPage: page,
-          totalPages: Math.ceil(total / limit),
+          totalPages: totalPages,
           totalStores: total,
-          hasNextPage: page < Math.ceil(total / limit),
-          hasPrevPage: page > 1
+          hasNextPage: hasNextPage,
+          hasPrevPage: hasPrevPage
         }
       }
     });
@@ -192,13 +332,11 @@ router.get('/stores', [
   }
 });
 
-// @desc    Create new user
-// @route   POST /api/admin/users
-// @access  Private (Admin only)
+// Create new user
 router.post('/users', [
   body('name')
-    .isLength({ min: 20, max: 60 })
-    .withMessage('Name must be between 20 and 60 characters'),
+    .isLength({ min: 3, max: 60 }) 
+    .withMessage('Name must be between 3 and 60 characters'),
   body('email')
     .isEmail()
     .withMessage('Please provide a valid email'),
@@ -215,6 +353,7 @@ router.post('/users', [
     .withMessage('Role must be admin, user, or store_owner')
 ], async (req, res) => {
   try {
+    // Check validation errors
     const errors = validationResult(req);
     if (!errors.isEmpty()) {
       return res.status(400).json({
@@ -224,10 +363,15 @@ router.post('/users', [
       });
     }
 
-    const { name, email, password, address, role } = req.body;
+    // Get data from request
+    const name = req.body.name;
+    const email = req.body.email;
+    const password = req.body.password;
+    const address = req.body.address;
+    const role = req.body.role;
 
-    // Check if user already exists
-    const existingUser = await User.findOne({ email });
+    // Check if user exists
+    const existingUser = await User.findOne({ email: email });
     if (existingUser) {
       return res.status(400).json({
         success: false,
@@ -237,11 +381,12 @@ router.post('/users', [
 
     // Create user
     const user = await User.create({
-      name,
-      email,
-      password,
-      address,
-      role
+      name: name,
+      email: email,
+      password: password,
+      address: address,
+      role: role,
+      isActive: true
     });
 
     res.status(201).json({
@@ -265,26 +410,27 @@ router.post('/users', [
   }
 });
 
-// @desc    Create new store
-// @route   POST /api/admin/stores
-// @access  Private (Admin only)
+// Create new store
 router.post('/stores', [
   body('name')
     .notEmpty()
     .withMessage('Store name is required')
-    .isLength({ max: 100 })
-    .withMessage('Store name cannot exceed 100 characters'),
+    .isLength({ min: 3, max: 100 })
+    .withMessage('Store name must be between 3 and 100 characters'),
   body('email')
     .isEmail()
     .withMessage('Please provide a valid email'),
   body('address')
     .isLength({ max: 400 })
     .withMessage('Address cannot exceed 400 characters'),
-  body('ownerId')
-    .isMongoId()
-    .withMessage('Valid owner ID is required')
+  body('ownerName')
+    .notEmpty()
+    .withMessage('Store owner name is required')
+    .isLength({ min: 3 })
+    .withMessage('Owner name must be at least 3 characters')
 ], async (req, res) => {
   try {
+    // Check validation errors
     const errors = validationResult(req);
     if (!errors.isEmpty()) {
       return res.status(400).json({
@@ -294,10 +440,14 @@ router.post('/stores', [
       });
     }
 
-    const { name, email, address, ownerId } = req.body;
+    // Get data from request
+    const name = req.body.name;
+    const email = req.body.email;
+    const address = req.body.address;
+    const ownerName = req.body.ownerName;
 
-    // Check if store email already exists
-    const existingStore = await Store.findOne({ email });
+    // Check if store exists
+    const existingStore = await Store.findOne({ email: email });
     if (existingStore) {
       return res.status(400).json({
         success: false,
@@ -305,30 +455,39 @@ router.post('/stores', [
       });
     }
 
-    // Check if owner exists
-    const owner = await User.findById(ownerId);
+    // Find owner by name
+    const owner = await User.findOne({ 
+        name: { $regex: ownerName, $options: 'i' }, 
+        role: 'store_owner' 
+    });
+    
     if (!owner) {
-      return res.status(404).json({
-        success: false,
-        message: 'Owner not found'
-      });
+        console.error('Store owner lookup failed for name: ' + ownerName + '. No matching user found with role store_owner.');
+        
+        return res.status(404).json({
+            success: false,
+            message: 'Store owner "' + ownerName + '" not found. Please ensure the full name is correct and the user exists with the store_owner role.'
+        });
     }
+
+    // Get owner ID
+    const ownerId = owner._id;
 
     // Create store
     const store = await Store.create({
-      name,
-      email,
-      address,
+      name: name,
+      email: email,
+      address: address,
       owner: ownerId
     });
 
-    // Populate owner info for response
+    // Add owner info to response
     await store.populate('owner', 'name email');
 
     res.status(201).json({
       success: true,
       message: 'Store created successfully',
-      store
+      store: store
     });
   } catch (error) {
     console.error('Create store error:', error);
@@ -340,13 +499,78 @@ router.post('/stores', [
   }
 });
 
-// @desc    Get user details by ID
-// @route   GET /api/admin/users/:id
-// @access  Private (Admin only)
+// Update store
+router.put('/stores/:id', [ 
+    body('isActive').optional().isBoolean().withMessage('isActive must be a boolean')
+], async (req, res) => {
+    try {
+        // Check validation errors
+        const errors = validationResult(req);
+        if (!errors.isEmpty()) {
+            return res.status(400).json({ 
+              success: false, 
+              message: 'Validation errors', 
+              errors: errors.array() 
+            });
+        }
+
+        // Find store
+        const store = await Store.findById(req.params.id);
+        if (!store) {
+            return res.status(404).json({ 
+              success: false, 
+              message: 'Store not found' 
+            });
+        }
+
+        // Update allowed fields
+        const allowedUpdates = ['name', 'email', 'address', 'isActive'];
+        let keys = Object.keys(req.body);
+        
+        for (let i = 0; i < keys.length; i++) {
+          let key = keys[i];
+          let isAllowed = false;
+          
+          for (let j = 0; j < allowedUpdates.length; j++) {
+            if (allowedUpdates[j] === key) {
+              isAllowed = true;
+              break;
+            }
+          }
+          
+          if (isAllowed && req.body[key] !== undefined) {
+            store[key] = req.body[key];
+          }
+        }
+
+        // Update owner if provided
+        if (req.body.ownerId) {
+            store.owner = req.body.ownerId;
+        }
+
+        // Save store
+        await store.save();
+
+        res.json({
+            success: true,
+            message: 'Store updated successfully',
+            store: store.toObject()
+        });
+    } catch (error) {
+        console.error('Update store error:', error);
+        res.status(500).json({ 
+          success: false, 
+          message: 'Server error', 
+          error: error.message 
+        });
+    }
+});
+
+// Get user details by ID
 router.get('/users/:id', async (req, res) => {
   try {
+    // Find user
     const user = await User.findById(req.params.id)
-      .populate('stores', 'name email address averageRating')
       .select('-password');
 
     if (!user) {
@@ -356,9 +580,48 @@ router.get('/users/:id', async (req, res) => {
       });
     }
 
+    let userObj = user.toObject();
+
+    // Add stores if user is store owner
+    if (user.role === 'store_owner') {
+      const stores = await Store.find({ owner: user._id, isActive: true })
+        .select('name email address')
+        .lean();
+      
+      // Get rating for each store
+      for (let i = 0; i < stores.length; i++) {
+        let store = stores[i];
+        
+        const ratingStats = await Rating.aggregate([
+          { $match: { store: store._id } },
+          {
+            $group: {
+              _id: '$store',
+              averageRating: { $avg: '$rating' },
+              totalRatings: { $sum: 1 }
+            }
+          }
+        ]);
+        
+        if (ratingStats.length > 0) {
+          let avgRating = ratingStats[0].averageRating;
+          avgRating = avgRating * 10;
+          avgRating = Math.round(avgRating);
+          avgRating = avgRating / 10;
+          store.averageRating = avgRating;
+          store.totalRatings = ratingStats[0].totalRatings;
+        } else {
+          store.averageRating = 0;
+          store.totalRatings = 0;
+        }
+      }
+      
+      userObj.stores = stores;
+    }
+
     res.json({
       success: true,
-      data: user
+      data: userObj
     });
   } catch (error) {
     console.error('Get user error:', error);
@@ -370,14 +633,12 @@ router.get('/users/:id', async (req, res) => {
   }
 });
 
-// @desc    Update user
-// @route   PUT /api/admin/users/:id
-// @access  Private (Admin only)
+// Update user
 router.put('/users/:id', [
   body('name')
     .optional()
-    .isLength({ min: 20, max: 60 })
-    .withMessage('Name must be between 20 and 60 characters'),
+    .isLength({ min: 3, max: 60 }) 
+    .withMessage('Name must be between 3 and 60 characters'),
   body('email')
     .optional()
     .isEmail()
@@ -396,6 +657,7 @@ router.put('/users/:id', [
     .withMessage('isActive must be a boolean')
 ], async (req, res) => {
   try {
+    // Check validation errors
     const errors = validationResult(req);
     if (!errors.isEmpty()) {
       return res.status(400).json({
@@ -405,6 +667,7 @@ router.put('/users/:id', [
       });
     }
 
+    // Find user
     const user = await User.findById(req.params.id);
     if (!user) {
       return res.status(404).json({
@@ -414,12 +677,26 @@ router.put('/users/:id', [
     }
 
     // Update user fields
-    Object.keys(req.body).forEach(key => {
-      if (req.body[key] !== undefined) {
+    const allowedUpdates = ['name', 'email', 'address', 'role', 'isActive'];
+    let keys = Object.keys(req.body);
+    
+    for (let i = 0; i < keys.length; i++) {
+      let key = keys[i];
+      let isAllowed = false;
+      
+      for (let j = 0; j < allowedUpdates.length; j++) {
+        if (allowedUpdates[j] === key) {
+          isAllowed = true;
+          break;
+        }
+      }
+      
+      if (isAllowed && req.body[key] !== undefined) {
         user[key] = req.body[key];
       }
-    });
+    }
 
+    // Save user
     await user.save();
 
     res.json({
@@ -444,11 +721,10 @@ router.put('/users/:id', [
   }
 });
 
-// @desc    Delete user (soft delete)
-// @route   DELETE /api/admin/users/:id
-// @access  Private (Admin only)
+// Delete user (soft delete)
 router.delete('/users/:id', async (req, res) => {
   try {
+    // Find user
     const user = await User.findById(req.params.id);
     if (!user) {
       return res.status(404).json({
@@ -457,7 +733,7 @@ router.delete('/users/:id', async (req, res) => {
       });
     }
 
-    // Soft delete - set isActive to false
+    // Set user as inactive
     user.isActive = false;
     await user.save();
 
@@ -475,11 +751,10 @@ router.delete('/users/:id', async (req, res) => {
   }
 });
 
-// @desc    Delete store (soft delete)
-// @route   DELETE /api/admin/stores/:id
-// @access  Private (Admin only)
+// Delete store (soft delete)
 router.delete('/stores/:id', async (req, res) => {
   try {
+    // Find store
     const store = await Store.findById(req.params.id);
     if (!store) {
       return res.status(404).json({
@@ -488,7 +763,7 @@ router.delete('/stores/:id', async (req, res) => {
       });
     }
 
-    // Soft delete - set isActive to false
+    // Set store as inactive
     store.isActive = false;
     await store.save();
 
@@ -507,4 +782,3 @@ router.delete('/stores/:id', async (req, res) => {
 });
 
 module.exports = router;
-

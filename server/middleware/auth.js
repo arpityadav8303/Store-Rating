@@ -1,16 +1,24 @@
 const jwt = require('jsonwebtoken');
 const User = require('../models/User');
 
-// Protect routes - verify JWT token
+
 const protect = async (req, res, next) => {
   try {
     let token;
 
-    // Get token from header
-    if (req.headers.authorization && req.headers.authorization.startsWith('Bearer')) {
-      token = req.headers.authorization.split(' ')[1];
+   
+    if (req.headers.authorization) {
+      let authHeader = req.headers.authorization;
+      
+      
+      if (authHeader.startsWith('Bearer')) {
+        
+        let parts = authHeader.split(' ');
+        token = parts[1];
+      }
     }
 
+    
     if (!token) {
       return res.status(401).json({
         success: false,
@@ -18,11 +26,16 @@ const protect = async (req, res, next) => {
       });
     }
 
-    // Verify token
+    
     const decoded = jwt.verify(token, process.env.JWT_SECRET);
     
-    // Get user from token
-    const user = await User.findById(decoded.id).select('-password');
+    
+    let userId = decoded.id;
+    
+    
+    const user = await User.findById(userId).select('-password');
+    
+    // Check if user exists
     if (!user) {
       return res.status(401).json({
         success: false,
@@ -30,6 +43,7 @@ const protect = async (req, res, next) => {
       });
     }
 
+    // Check if user is active
     if (!user.isActive) {
       return res.status(401).json({
         success: false,
@@ -37,10 +51,31 @@ const protect = async (req, res, next) => {
       });
     }
 
+    // Add user to request
     req.user = user;
+    
+    // Continue to next middleware
     next();
   } catch (error) {
     console.error('Auth middleware error:', error);
+    
+    // Check error type
+    let errorName = error.name;
+    
+    if (errorName === 'JsonWebTokenError') {
+      return res.status(401).json({
+        success: false,
+        message: 'Invalid token.'
+      });
+    }
+    
+    if (errorName === 'TokenExpiredError') {
+      return res.status(401).json({
+        success: false,
+        message: 'Token expired.'
+      });
+    }
+    
     return res.status(401).json({
       success: false,
       message: 'Token is not valid.'
@@ -49,14 +84,35 @@ const protect = async (req, res, next) => {
 };
 
 // Grant access to specific roles
-const authorize = (...roles) => {
-  return (req, res, next) => {
-    if (!roles.includes(req.user.role)) {
+const authorize = function() {
+  // Get all roles passed as arguments
+  let roles = [];
+  for (let i = 0; i < arguments.length; i++) {
+    roles.push(arguments[i]);
+  }
+  
+  // Return middleware function
+  return function(req, res, next) {
+    // Get user role
+    let userRole = req.user.role;
+    
+    // Check if user role is in allowed roles
+    let isAuthorized = false;
+    for (let i = 0; i < roles.length; i++) {
+      if (roles[i] === userRole) {
+        isAuthorized = true;
+        break;
+      }
+    }
+    
+    if (!isAuthorized) {
       return res.status(403).json({
         success: false,
-        message: `User role ${req.user.role} is not authorized to access this route`
+        message: 'User role ' + userRole + ' is not authorized to access this route'
       });
     }
+    
+    // Continue to next middleware
     next();
   };
 };
@@ -71,10 +127,9 @@ const isStoreOwner = authorize('store_owner');
 const isUser = authorize('user');
 
 module.exports = {
-  protect,
-  authorize,
-  isAdmin,
-  isStoreOwner,
-  isUser
+  protect: protect,
+  authorize: authorize,
+  isAdmin: isAdmin,
+  isStoreOwner: isStoreOwner,
+  isUser: isUser
 };
-

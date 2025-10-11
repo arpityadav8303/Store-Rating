@@ -5,7 +5,6 @@ import { toast } from 'react-toastify';
 
 const AdminStores = () => {
   const [stores, setStores] = useState([]);
-  const [users, setUsers] = useState([]);
   const [loading, setLoading] = useState(true);
   const [searchTerm, setSearchTerm] = useState('');
   const [sortBy, setSortBy] = useState('createdAt');
@@ -15,68 +14,132 @@ const AdminStores = () => {
     name: '',
     email: '',
     address: '',
-    ownerId: ''
+    ownerName: '' 
   });
+  const [validationErrors, setValidationErrors] = useState({});
+  
+  const [debouncedSearchTerm, setDebouncedSearchTerm] = useState(''); 
 
+  // Wait before searching
+  useEffect(() => {
+    const handler = setTimeout(function() {
+      setDebouncedSearchTerm(searchTerm);
+    }, 500);
+    
+    return function() {
+      clearTimeout(handler);
+    };
+  }, [searchTerm]);
+
+  // Load stores when search or sort changes
   useEffect(() => {
     fetchStores();
-    fetchUsers();
-  }, [searchTerm, sortBy, sortOrder]);
+  }, [debouncedSearchTerm, sortBy, sortOrder]);
 
   const fetchStores = async () => {
     try {
       setLoading(true);
-      const params = new URLSearchParams({
-        search: searchTerm,
-        sortBy,
-        sortOrder,
-        limit: '50'
-      });
       
-      const response = await axios.get(`/api/admin/stores?${params}`);
-      setStores(response.data.data.stores);
+      const params = {
+        search: debouncedSearchTerm,
+        sortBy: sortBy,
+        sortOrder: sortOrder,
+        limit: '50'
+      };
+      
+      const response = await axios.get('/api/admin/stores', { params: params });
+      const storesData = response.data.data.stores;
+      setStores(storesData);
     } catch (error) {
-      console.error('Error fetching stores:', error);
+      console.error('Error fetching stores:', error.message);
       toast.error('Failed to load stores');
     } finally {
       setLoading(false);
     }
   };
 
-  const fetchUsers = async () => {
-    try {
-      const response = await axios.get('/api/admin/users?role=store_owner&limit=100');
-      setUsers(response.data.data.users);
-    } catch (error) {
-      console.error('Error fetching users:', error);
-    }
-  };
-
   const handleCreateStore = async (e) => {
     e.preventDefault();
+    setValidationErrors({});
+
     try {
-      await axios.post('/api/admin/stores', createForm);
+      const payload = {
+          name: createForm.name,
+          email: createForm.email,
+          address: createForm.address,
+          ownerName: createForm.ownerName
+      };
+
+      await axios.post('/api/admin/stores', payload);
       toast.success('Store created successfully!');
       setShowCreateModal(false);
       setCreateForm({
-        name: '',
-        email: '',
-        address: '',
-        ownerId: ''
+        name: '', 
+        email: '', 
+        address: '', 
+        ownerName: ''
       });
       fetchStores();
     } catch (error) {
       console.error('Error creating store:', error);
-      toast.error('Failed to create store');
+      
+      // Check for validation errors
+      if (error.response) {
+        const status = error.response.status;
+        const data = error.response.data;
+        
+        if (status === 400 && data.errors) {
+          // Handle validation errors from backend
+          const newErrors = {};
+          const errorArray = data.errors;
+          
+          for (let i = 0; i < errorArray.length; i++) {
+            const err = errorArray[i];
+            const fieldName = err.path;
+            const errorMessage = err.msg;
+            newErrors[fieldName] = errorMessage;
+          }
+          
+          setValidationErrors(newErrors);
+          toast.error('Validation failed. Please check the form fields.');
+          
+        } else if (status === 400 && data.message.includes('Store already exists')) {
+          // Store email already exists
+          toast.error(data.message);
+          
+        } else if (status === 404) {
+          // Owner not found
+          toast.error(data.message);
+        } else {
+          // Other errors
+          let errorMsg = 'Failed to create store due to a server error.';
+          if (data && data.message) {
+            errorMsg = data.message;
+          }
+          toast.error(errorMsg);
+        }
+      } else {
+        toast.error('Failed to create store due to a server error.');
+      }
     }
   };
 
   const toggleStoreStatus = async (storeId, currentStatus) => {
     try {
-      await axios.put(`/api/admin/stores/${storeId}`, {
-        isActive: !currentStatus
+      const newStatus = !currentStatus;
+      
+      await axios.put('/api/admin/stores/' + storeId, {
+        isActive: newStatus
       });
-      toast.success(`Store ${!currentStatus ? 'activated' : 'deactivated'} successfully!`);
+      
+      let message = '';
+      if (newStatus) {
+        message = 'Store activated successfully!';
+      } else {
+        message = 'Store deactivated successfully!';
+      }
+      
+      toast.success(message);
       fetchStores();
     } catch (error) {
       console.error('Error updating store:', error);
@@ -84,15 +147,23 @@ const AdminStores = () => {
     }
   };
 
-  const renderStars = (rating) => {
-    return Array.from({ length: 5 }, (_, index) => (
-      <span
-        key={index}
-        className={index < rating ? 'star-filled' : 'star-empty'}
-      >
-        ★
-      </span>
-    ));
+  const renderStars = function(rating) {
+    let stars = [];
+    
+    for (let i = 0; i < 5; i++) {
+      let color = '#e4e5e9';
+      if (i < rating) {
+        color = '#ffc107';
+      }
+      
+      stars.push(
+        <span key={i} style={{ color: color }}>
+          ★
+        </span>
+      );
+    }
+    
+    return stars;
   };
 
   if (loading) {
@@ -112,28 +183,33 @@ const AdminStores = () => {
         <Col>
           <div className="d-flex justify-content-between align-items-center mb-4">
             <h2 className="mb-0">Store Management</h2>
-            <Button variant="primary" onClick={() => setShowCreateModal(true)}>
-              <i className="bi bi-plus-circle me-1"></i>
+            <Button variant="primary" onClick={function() {
+              setValidationErrors({});
+              setShowCreateModal(true);
+            }}>
               Add New Store
             </Button>
           </div>
         </Col>
       </Row>
 
-      {/* Filters */}
       <Row className="mb-4">
         <Col md={4}>
           <Form.Control
             type="text"
             placeholder="Search stores..."
             value={searchTerm}
-            onChange={(e) => setSearchTerm(e.target.value)}
+            onChange={function(e) {
+              setSearchTerm(e.target.value);
+            }}
           />
         </Col>
         <Col md={2}>
           <Form.Select
             value={sortBy}
-            onChange={(e) => setSortBy(e.target.value)}
+            onChange={function(e) {
+              setSortBy(e.target.value);
+            }}
           >
             <option value="createdAt">Sort by Date</option>
             <option value="name">Sort by Name</option>
@@ -143,7 +219,9 @@ const AdminStores = () => {
         <Col md={2}>
           <Form.Select
             value={sortOrder}
-            onChange={(e) => setSortOrder(e.target.value)}
+            onChange={function(e) {
+              setSortOrder(e.target.value);
+            }}
           >
             <option value="desc">Descending</option>
             <option value="asc">Ascending</option>
@@ -151,12 +229,11 @@ const AdminStores = () => {
         </Col>
         <Col md={2}>
           <Button variant="outline-secondary" onClick={fetchStores}>
-            <i className="bi bi-arrow-clockwise"></i>
+            Refresh
           </Button>
         </Col>
       </Row>
 
-      {/* Stores Table */}
       <Row>
         <Col>
           <Card className="border-0 shadow-sm">
@@ -165,7 +242,7 @@ const AdminStores = () => {
             </Card.Header>
             <Card.Body className="p-0">
               <div className="table-responsive">
-                <Table className="mb-0">
+                <Table className="mb-0" hover>
                   <thead className="table-light">
                     <tr>
                       <th>Store Name</th>
@@ -179,50 +256,65 @@ const AdminStores = () => {
                     </tr>
                   </thead>
                   <tbody>
-                    {stores.map((store) => (
-                      <tr key={store._id}>
-                        <td>{store.name}</td>
-                        <td>{store.email}</td>
-                        <td className="text-truncate" style={{ maxWidth: '200px' }}>
-                          {store.address}
-                        </td>
-                        <td>
-                          {store.owner ? (
-                            <div>
-                              <div>{store.owner.name}</div>
-                              <small className="text-muted">{store.owner.email}</small>
-                            </div>
-                          ) : (
-                            <span className="text-muted">No owner</span>
-                          )}
-                        </td>
-                        <td>
-                          <div className="d-flex align-items-center">
-                            <span className="rating-stars me-2">
-                              {renderStars(Math.round(store.averageRating || 0))}
-                            </span>
-                            <span className="fw-bold">
-                              {(store.averageRating || 0).toFixed(1)}
-                            </span>
-                          </div>
-                        </td>
-                        <td>
-                          <Badge bg={store.isActive ? 'success' : 'danger'}>
-                            {store.isActive ? 'Active' : 'Inactive'}
-                          </Badge>
-                        </td>
-                        <td>{new Date(store.createdAt).toLocaleDateString()}</td>
-                        <td>
-                          <Button
-                            variant={store.isActive ? 'outline-danger' : 'outline-success'}
-                            size="sm"
-                            onClick={() => toggleStoreStatus(store._id, store.isActive)}
-                          >
-                            {store.isActive ? 'Deactivate' : 'Activate'}
-                          </Button>
+                    {stores.length === 0 ? (
+                      <tr>
+                        <td colSpan="8" className="text-center py-4">
+                          No stores found
                         </td>
                       </tr>
-                    ))}
+                    ) : (
+                      stores.map(function(store) {
+                        return (
+                          <tr key={store._id}>
+                            <td>{store.name}</td>
+                            <td>{store.email}</td>
+                            <td className="text-truncate" style={{ maxWidth: '200px' }}>
+                              {store.address}
+                            </td>
+                            <td>
+                              {store.owner ? (
+                                <div>
+                                  <div>{store.owner.name}</div>
+                                  <small className="text-muted">{store.owner.email}</small>
+                                </div>
+                              ) : (
+                                <span className="text-muted">No owner</span>
+                              )}
+                            </td>
+                            <td>
+                              <div className="d-flex align-items-center">
+                                <span className="rating-stars me-2">
+                                  {renderStars(Math.round(store.averageRating || 0))}
+                                </span>
+                                <span className="fw-bold">
+                                  {(store.averageRating || 0).toFixed(1)}
+                                </span>
+                                <small className="text-muted ms-1">
+                                  ({store.totalRatings || 0})
+                                </small>
+                              </div>
+                            </td>
+                            <td>
+                              <Badge bg={store.isActive ? 'success' : 'danger'}>
+                                {store.isActive ? 'Active' : 'Inactive'}
+                              </Badge>
+                            </td>
+                            <td>{new Date(store.createdAt).toLocaleDateString()}</td>
+                            <td>
+                              <Button
+                                variant={store.isActive ? 'outline-danger' : 'outline-success'}
+                                size="sm"
+                                onClick={function() {
+                                  toggleStoreStatus(store._id, store.isActive);
+                                }}
+                              >
+                                {store.isActive ? 'Deactivate' : 'Activate'}
+                              </Button>
+                            </td>
+                          </tr>
+                        );
+                      })
+                    )}
                   </tbody>
                 </Table>
               </div>
@@ -231,8 +323,9 @@ const AdminStores = () => {
         </Col>
       </Row>
 
-      {/* Create Store Modal */}
-      <Modal show={showCreateModal} onHide={() => setShowCreateModal(false)} size="lg">
+      <Modal show={showCreateModal} onHide={function() {
+        setShowCreateModal(false);
+      }} size="lg">
         <Modal.Header closeButton>
           <Modal.Title>Create New Store</Modal.Title>
         </Modal.Header>
@@ -245,11 +338,23 @@ const AdminStores = () => {
                   <Form.Control
                     type="text"
                     value={createForm.name}
-                    onChange={(e) => setCreateForm({...createForm, name: e.target.value})}
+                    onChange={function(e) {
+                      const newForm = {...createForm};
+                      newForm.name = e.target.value;
+                      setCreateForm(newForm);
+                    }}
                     placeholder="Enter store name"
                     required
+                    isInvalid={!!validationErrors.name} 
+                    minLength={3}
                     maxLength={100}
                   />
+                  <Form.Control.Feedback type="invalid">
+                    {validationErrors.name}
+                  </Form.Control.Feedback>
+                  <Form.Text className="text-muted">
+                    3-100 characters
+                  </Form.Text>
                 </Form.Group>
               </Col>
               <Col md={6}>
@@ -258,48 +363,79 @@ const AdminStores = () => {
                   <Form.Control
                     type="email"
                     value={createForm.email}
-                    onChange={(e) => setCreateForm({...createForm, email: e.target.value})}
+                    onChange={function(e) {
+                      const newForm = {...createForm};
+                      newForm.email = e.target.value;
+                      setCreateForm(newForm);
+                    }}
                     placeholder="Enter store email"
                     required
+                    isInvalid={!!validationErrors.email} 
                   />
+                  <Form.Control.Feedback type="invalid">
+                    {validationErrors.email}
+                  </Form.Control.Feedback>
                 </Form.Group>
               </Col>
             </Row>
             <Row>
-              <Col md={6}>
+              <Col md={12}>
                 <Form.Group className="mb-3">
-                  <Form.Label>Owner</Form.Label>
-                  <Form.Select
-                    value={createForm.ownerId}
-                    onChange={(e) => setCreateForm({...createForm, ownerId: e.target.value})}
+                  <Form.Label>Owner Name</Form.Label>
+                  <Form.Control
+                    type="text"
+                    value={createForm.ownerName}
+                    onChange={function(e) {
+                      const newForm = {...createForm};
+                      newForm.ownerName = e.target.value;
+                      setCreateForm(newForm);
+                    }}
+                    placeholder="Type the full name of the store owner"
                     required
-                  >
-                    <option value="">Select Store Owner</option>
-                    {users.map((user) => (
-                      <option key={user._id} value={user._id}>
-                        {user.name} ({user.email})
-                      </option>
-                    ))}
-                  </Form.Select>
+                    isInvalid={!!validationErrors.ownerName} 
+                    minLength={3}
+                  />
+                  <Form.Control.Feedback type="invalid">
+                    {validationErrors.ownerName}
+                  </Form.Control.Feedback>
+                  <Form.Text className="text-muted">
+                    The name must match an existing user with the store owner role.
+                  </Form.Text>
                 </Form.Group>
               </Col>
-              <Col md={6}>
+            </Row>
+            <Row>
+              <Col md={12}>
                 <Form.Group className="mb-3">
                   <Form.Label>Address</Form.Label>
                   <Form.Control
-                    type="text"
+                    as="textarea"
+                    rows={3}
                     value={createForm.address}
-                    onChange={(e) => setCreateForm({...createForm, address: e.target.value})}
+                    onChange={function(e) {
+                      const newForm = {...createForm};
+                      newForm.address = e.target.value;
+                      setCreateForm(newForm);
+                    }}
                     placeholder="Enter store address"
                     required
+                    isInvalid={!!validationErrors.address} 
                     maxLength={400}
                   />
+                  <Form.Control.Feedback type="invalid">
+                    {validationErrors.address}
+                  </Form.Control.Feedback>
+                  <Form.Text className="text-muted">
+                    Maximum 400 characters
+                  </Form.Text>
                 </Form.Group>
               </Col>
             </Row>
           </Modal.Body>
           <Modal.Footer>
-            <Button variant="secondary" onClick={() => setShowCreateModal(false)}>
+            <Button variant="secondary" onClick={function() {
+              setShowCreateModal(false);
+            }}>
               Cancel
             </Button>
             <Button variant="primary" type="submit">
@@ -308,9 +444,15 @@ const AdminStores = () => {
           </Modal.Footer>
         </form>
       </Modal>
+
+      <style>{`
+        .rating-stars {
+          font-size: 1.2rem;
+          letter-spacing: 2px;
+        }
+      `}</style>
     </Container>
   );
 };
 
 export default AdminStores;
-

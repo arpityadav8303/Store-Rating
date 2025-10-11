@@ -5,6 +5,7 @@ const storeSchema = new mongoose.Schema({
     type: String,
     required: [true, 'Store name is required'],
     trim: true,
+    minlength: [3, 'Store name must be at least 3 characters'],
     maxlength: [100, 'Store name cannot exceed 100 characters']
   },
   email: {
@@ -26,11 +27,13 @@ const storeSchema = new mongoose.Schema({
   owner: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'User',
-    required: true
+    required: true,
+    index: true
   },
   isActive: {
     type: Boolean,
-    default: true
+    default: true,
+    index: true
   },
   createdAt: {
     type: Date,
@@ -41,31 +44,12 @@ const storeSchema = new mongoose.Schema({
     default: Date.now
   }
 }, {
-  toJSON: { virtuals: true },
-  toObject: { virtuals: true }
+  toJSON: { virtuals: false },
+  toObject: { virtuals: false }
 });
 
-// Virtual for average rating
-storeSchema.virtual('averageRating', {
-  ref: 'Rating',
-  localField: '_id',
-  foreignField: 'store',
-  justOne: false,
-  options: { sort: { createdAt: -1 } },
-  transform: function(ratings) {
-    if (!ratings || ratings.length === 0) return 0;
-    const sum = ratings.reduce((acc, rating) => acc + rating.rating, 0);
-    return Math.round((sum / ratings.length) * 10) / 10; // Round to 1 decimal place
-  }
-});
-
-// Virtual for total ratings count
-storeSchema.virtual('totalRatings', {
-  ref: 'Rating',
-  localField: '_id',
-  foreignField: 'store',
-  count: true
-});
+// Compound index for faster queries (owner + isActive)
+storeSchema.index({ owner: 1, isActive: 1 });
 
 // Update updatedAt field before saving
 storeSchema.pre('save', function(next) {
@@ -74,4 +58,3 @@ storeSchema.pre('save', function(next) {
 });
 
 module.exports = mongoose.model('Store', storeSchema);
-

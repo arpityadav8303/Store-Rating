@@ -5,9 +5,9 @@ A full-stack web application that allows users to submit ratings for stores regi
 ## Features
 
 ### User Roles
-- **System Administrator**: Can manage users, stores, and view platform statistics
-- **Normal User**: Can browse stores, submit ratings, and manage their profile
-- **Store Owner**: Can view ratings for their store and analytics
+System Administrator: Can manage users, stores, and view platform statistics
+Normal User: Can browse stores, submit ratings, and manage their profile
+Store Owner: Can view ratings for their store and analytics
 
 ### Key Functionalities
 
@@ -72,12 +72,10 @@ npm install
 
 3. Create environment file:
 ```bash
-# Copy the example file
+
 cp config.env .env
 
-# Edit .env file with your MongoDB connection string
-# MONGODB_URI=mongodb://localhost:27017/store-rating-system
-# Or use MongoDB Atlas: MONGODB_URI=mongodb+srv://username:password@cluster.mongodb.net/store-rating-system
+
 ```
 
 4. Update the `config.env` file with your database connection:
@@ -245,7 +243,7 @@ You can create demo accounts or use these sample credentials:
 4. Add tests if applicable
 5. Submit a pull request
 
-## License
 
-This project is licensed under the ISC License.
+
+
 

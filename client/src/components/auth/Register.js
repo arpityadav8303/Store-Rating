@@ -5,7 +5,7 @@ import { useAuth } from '../../context/AuthContext';
 import { toast } from 'react-toastify';
 import LoadingSpinner from '../common/LoadingSpinner';
 
-const Register = () => {
+const Register = function() {
   const [formData, setFormData] = useState({
     name: '',
     email: '',
@@ -17,72 +17,85 @@ const Register = () => {
   const [loading, setLoading] = useState(false);
   const [errors, setErrors] = useState({});
 
-  const { register, user } = useAuth();
+  const authContext = useAuth();
+  const register = authContext.register;
+  const user = authContext.user;
+  
   const navigate = useNavigate();
 
-  // Redirect if already logged in
-  useEffect(() => {
+  // Check if user is already logged in
+  useEffect(function() {
     if (user) {
-      const dashboardPath = user.role === 'admin' ? '/admin/dashboard' : 
-                           user.role === 'store_owner' ? '/store-owner/dashboard' : '/user/stores';
+      let dashboardPath = '/user/stores';
+      
+      if (user.role === 'admin') {
+        dashboardPath = '/admin/dashboard';
+      } else if (user.role === 'store_owner') {
+        dashboardPath = '/store-owner/dashboard';
+      }
+      
       navigate(dashboardPath, { replace: true });
     }
   }, [user, navigate]);
 
-  const handleChange = (e) => {
-    const { name, value } = e.target;
-    setFormData(prev => ({
-      ...prev,
-      [name]: value
-    }));
+  const handleChange = function(e) {
+    const fieldName = e.target.name;
+    const fieldValue = e.target.value;
     
-    // Clear error when user starts typing
-    if (errors[name]) {
-      setErrors(prev => ({
-        ...prev,
-        [name]: ''
-      }));
+    const newFormData = {...formData};
+    newFormData[fieldName] = fieldValue;
+    setFormData(newFormData);
+    
+    // Clear error when user types
+    if (errors[fieldName]) {
+      const newErrors = {...errors};
+      newErrors[fieldName] = '';
+      setErrors(newErrors);
     }
   };
 
-  const validateForm = () => {
+  const validateForm = function() {
     const newErrors = {};
 
-    // Name validation
+    // Check name
     if (!formData.name) {
       newErrors.name = 'Name is required';
-    } else if (formData.name.length < 20) {
-      newErrors.name = 'Name must be at least 20 characters';
+    } else if (formData.name.length < 3) {
+      newErrors.name = 'Name must be at least 3 characters';
     } else if (formData.name.length > 60) {
       newErrors.name = 'Name cannot exceed 60 characters';
     }
 
-    // Email validation
+    // Check email
+    const emailPattern = /\S+@\S+\.\S+/;
     if (!formData.email) {
       newErrors.email = 'Email is required';
-    } else if (!/\S+@\S+\.\S+/.test(formData.email)) {
+    } else if (!emailPattern.test(formData.email)) {
       newErrors.email = 'Please enter a valid email address';
     }
 
-    // Address validation
+    // Check address
     if (!formData.address) {
       newErrors.address = 'Address is required';
     } else if (formData.address.length > 400) {
       newErrors.address = 'Address cannot exceed 400 characters';
     }
 
-    // Password validation
+    // Check password
     if (!formData.password) {
       newErrors.password = 'Password is required';
     } else if (formData.password.length < 8) {
       newErrors.password = 'Password must be at least 8 characters';
     } else if (formData.password.length > 16) {
       newErrors.password = 'Password cannot exceed 16 characters';
-    } else if (!/(?=.*[A-Z])(?=.*[!@#$%^&*()_+\-=\[\]{};':"\\|,.<>\/?])/.test(formData.password)) {
-      newErrors.password = 'Password must contain at least one uppercase letter and one special character';
+    } else {
+      const passwordPattern = /(?=.*[A-Z])(?=.*[!@#$%^&*()_+\-=\[\]{};':"\\|,.<>\/?])/;
+      if (!passwordPattern.test(formData.password)) {
+        newErrors.password = 'Password must contain at least one uppercase letter and one special character';
+      }
     }
 
-    // Confirm password validation
+    // Check confirm password
     if (!formData.confirmPassword) {
       newErrors.confirmPassword = 'Please confirm your password';
     } else if (formData.password !== formData.confirmPassword) {
@@ -90,40 +103,67 @@ const Register = () => {
     }
 
     setErrors(newErrors);
-    return Object.keys(newErrors).length === 0;
+    
+    const errorKeys = Object.keys(newErrors);
+    if (errorKeys.length === 0) {
+      return true;
+    } else {
+      return false;
+    }
   };
 
-  const handleSubmit = async (e) => {
+  const handleSubmit = async function(e) {
     e.preventDefault();
 
-    if (!validateForm()) {
+    const isValid = validateForm();
+    if (!isValid) {
       return;
     }
 
     setLoading(true);
+    
     try {
-      const result = await register({
+      const registrationData = {
         name: formData.name,
         email: formData.email,
         address: formData.address,
         password: formData.password,
         role: formData.role
-      });
+      };
+      
+      const result = await register(registrationData);
       
       if (result.success) {
         toast.success('Registration successful!');
-        const dashboardPath = formData.role === 'admin' ? '/admin/dashboard' : 
-                             formData.role === 'store_owner' ? '/store-owner/dashboard' : '/user/stores';
+        
+        let dashboardPath = '/user/stores';
+        if (formData.role === 'admin') {
+          dashboardPath = '/admin/dashboard';
+        } else if (formData.role === 'store_owner') {
+          dashboardPath = '/store-owner/dashboard';
+        }
+        
         navigate(dashboardPath, { replace: true });
       } else {
         if (result.errors && result.errors.length > 0) {
           const fieldErrors = {};
-          result.errors.forEach(error => {
-            fieldErrors[error.path] = error.msg;
-          });
+          const errorArray = result.errors;
+          
+          for (let i = 0; i < errorArray.length; i++) {
+            const error = errorArray[i];
+            const fieldName = error.path;
+            const errorMsg = error.msg;
+            fieldErrors[fieldName] = errorMsg;
+          }
+          
           setErrors(fieldErrors);
         }
-        toast.error(result.message || 'Registration failed');
+        
+        let errorMessage = 'Registration failed';
+        if (result.message) {
+          errorMessage = result.message;
+        }
+        toast.error(errorMessage);
       }
     } catch (error) {
       toast.error('An error occurred during registration');
@@ -132,24 +172,42 @@ const Register = () => {
     }
   };
 
-  const getPasswordStrength = () => {
+  const getPasswordStrength = function() {
     const password = formData.password;
     let strength = 0;
     let feedback = [];
 
-    if (password.length >= 8) strength++;
-    else feedback.push('At least 8 characters');
+    // Check length minimum
+    if (password.length >= 8) {
+      strength = strength + 1;
+    } else {
+      feedback.push('At least 8 characters');
+    }
 
-    if (password.length <= 16) strength++;
-    else feedback.push('Maximum 16 characters');
+    // Check length maximum
+    if (password.length <= 16) {
+      strength = strength + 1;
+    } else {
+      feedback.push('Maximum 16 characters');
+    }
 
-    if (/[A-Z]/.test(password)) strength++;
-    else feedback.push('One uppercase letter');
+    // Check uppercase
+    const hasUppercase = /[A-Z]/.test(password);
+    if (hasUppercase) {
+      strength = strength + 1;
+    } else {
+      feedback.push('One uppercase letter');
+    }
 
-    if (/[!@#$%^&*()_+\-=\[\]{};':"\\|,.<>\/?]/.test(password)) strength++;
-    else feedback.push('One special character');
+    // Check special character
+    const hasSpecial = /[!@#$%^&*()_+\-=\[\]{};':"\\|,.<>\/?]/.test(password);
+    if (hasSpecial) {
+      strength = strength + 1;
+    } else {
+      feedback.push('One special character');
+    }
 
-    return { strength, feedback };
+    return { strength: strength, feedback: feedback };
   };
 
   const passwordStrength = getPasswordStrength();
@@ -174,7 +232,7 @@ const Register = () => {
                         value={formData.name}
                         onChange={handleChange}
                         isInvalid={!!errors.name}
-                        placeholder="Enter your full name (20-60 characters)"
+                        placeholder="Enter your full name (3-60 characters)"
                         disabled={loading}
                       />
                       <Form.Control.Feedback type="invalid">
@@ -224,17 +282,18 @@ const Register = () => {
                         <div className="mt-2">
                           <div className="progress" style={{ height: '5px' }}>
                             <div 
-                              className={`progress-bar ${
-                                passwordStrength.strength <= 1 ? 'bg-danger' :
+                              className={
+                                'progress-bar ' + 
+                                (passwordStrength.strength <= 1 ? 'bg-danger' :
                                 passwordStrength.strength <= 2 ? 'bg-warning' :
-                                passwordStrength.strength <= 3 ? 'bg-info' : 'bg-success'
-                              }`}
-                              style={{ width: `${(passwordStrength.strength / 4) * 100}%` }}
+                                passwordStrength.strength <= 3 ? 'bg-info' : 'bg-success')
+                              }
+                              style={{ width: (passwordStrength.strength / 4) * 100 + '%' }}
                             ></div>
                           </div>
                           <small className="text-muted">
                             {passwordStrength.feedback.length > 0 && 
-                              `Missing: ${passwordStrength.feedback.join(', ')}`
+                              'Missing: ' + passwordStrength.feedback.join(', ')
                             }
                           </small>
                         </div>

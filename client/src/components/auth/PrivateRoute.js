@@ -3,29 +3,59 @@ import { Navigate, useLocation } from 'react-router-dom';
 import { useAuth } from '../../context/AuthContext';
 import LoadingSpinner from '../common/LoadingSpinner';
 
-const PrivateRoute = ({ children, allowedRoles = [] }) => {
-  const { user, loading } = useAuth();
+const PrivateRoute = function(props) {
+  const children = props.children;
+  const allowedRoles = props.allowedRoles;
+  
+  const authContext = useAuth();
+  const user = authContext.user;
+  const loading = authContext.loading;
+  
   const location = useLocation();
 
+  // Show loading spinner while checking auth
   if (loading) {
     return <LoadingSpinner message="Checking authentication..." />;
   }
 
+  // Check if user is logged in
   if (!user) {
-    // Redirect to login page with return url
+    // Redirect to login page
     return <Navigate to="/login" state={{ from: location }} replace />;
   }
 
   // Check if user role is allowed
-  if (allowedRoles.length > 0 && !allowedRoles.includes(user.role)) {
-    // Redirect to appropriate dashboard based on user role
-    const dashboardPath = user.role === 'admin' ? '/admin' : 
-                         user.role === 'store_owner' ? '/store-owner' : '/user';
-    return <Navigate to={dashboardPath} replace />;
+  let hasAllowedRoles = false;
+  if (allowedRoles && allowedRoles.length > 0) {
+    hasAllowedRoles = true;
+  }
+  
+  if (hasAllowedRoles) {
+    let userRole = user.role;
+    let isRoleAllowed = false;
+    
+    for (let i = 0; i < allowedRoles.length; i++) {
+      if (allowedRoles[i] === userRole) {
+        isRoleAllowed = true;
+        break;
+      }
+    }
+    
+    if (!isRoleAllowed) {
+      // Redirect to appropriate dashboard
+      let dashboardPath = '/user';
+      
+      if (userRole === 'admin') {
+        dashboardPath = '/admin';
+      } else if (userRole === 'store_owner') {
+        dashboardPath = '/store-owner';
+      }
+      
+      return <Navigate to={dashboardPath} replace />;
+    }
   }
 
   return children;
 };
 
 export default PrivateRoute;
-

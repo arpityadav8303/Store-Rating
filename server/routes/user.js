@@ -2,16 +2,15 @@ const express = require('express');
 const { body, validationResult, query } = require('express-validator');
 const Store = require('../models/Store');
 const Rating = require('../models/Rating');
-const { protect, isUser } = require('../middleware/auth');
+const User = require('../models/User');
+const { protect } = require('../middleware/auth');
 
 const router = express.Router();
 
-// Apply authentication to all routes
+// All routes need authentication
 router.use(protect);
 
-// @desc    Get all stores for normal users
-// @route   GET /api/user/stores
-// @access  Private (Authenticated users)
+// Get all stores
 router.get('/stores', [
   query('page').optional().isInt({ min: 1 }).withMessage('Page must be a positive integer'),
   query('limit').optional().isInt({ min: 1, max: 100 }).withMessage('Limit must be between 1 and 100'),
@@ -20,6 +19,7 @@ router.get('/stores', [
   query('search').optional().isString().withMessage('Search must be a string')
 ], async (req, res) => {
   try {
+    // Check if there are validation errors
     const errors = validationResult(req);
     if (!errors.isEmpty()) {
       return res.status(400).json({
@@ -29,15 +29,37 @@ router.get('/stores', [
       });
     }
 
-    const page = parseInt(req.query.page) || 1;
-    const limit = parseInt(req.query.limit) || 10;
-    const sortBy = req.query.sortBy || 'createdAt';
-    const sortOrder = req.query.sortOrder === 'asc' ? 1 : -1;
-    const search = req.query.search;
+    // Get query parameters
+    let page = req.query.page;
+    if (!page) {
+      page = 1;
+    }
+    page = parseInt(page);
 
-    // Build filter object
+    let limit = req.query.limit;
+    if (!limit) {
+      limit = 10;
+    }
+    limit = parseInt(limit);
+
+    let sortBy = req.query.sortBy;
+    if (!sortBy) {
+      sortBy = 'createdAt';
+    }
+
+    let sortOrder = req.query.sortOrder;
+    if (sortOrder === 'asc') {
+      sortOrder = 1;
+    } else {
+      sortOrder = -1;
+    }
+
+    let search = req.query.search;
+
+    // Create filter for active stores only
     let filter = { isActive: true };
 
+    // Add search if provided
     if (search) {
       filter.$or = [
         { name: { $regex: search, $options: 'i' } },
@@ -45,72 +67,192 @@ router.get('/stores', [
       ];
     }
 
-    // Calculate pagination
-    const skip = (page - 1) * limit;
+    // Calculate skip
+    let skip = (page - 1) * limit;
 
-    // Get stores with pagination and sorting
-    const stores = await Store.find(filter)
-      .sort({ [sortBy]: sortOrder })
-      .skip(skip)
-      .limit(limit)
-      .populate('owner', 'name email');
+    let stores;
+    let total;
 
-    // Get user's ratings for these stores
-    const storeIds = stores.map(store => store._id);
+    // Check if sorting by average rating
+    if (sortBy === 'averageRating') {
+      // Count total stores first
+      const totalCountPipeline = [
+        { $match: filter },
+        { $count: "total" }
+      ];
+      const totalResult = await Store.aggregate(totalCountPipeline);
+      if (totalResult.length > 0) {
+        total = totalResult[0].total;
+      } else {
+        total = 0;
+      }
+
+      // Get stores with aggregation
+      stores = await Store.aggregate([
+        { $match: filter },
+        {
+          $lookup: {
+            from: 'ratings',
+            localField: '_id',
+            foreignField: 'store',
+            as: 'ratings'
+          }
+        },
+        {
+          $addFields: {
+            averageRating: {
+              $cond: {
+                if: { $gt: [{ $size: '$ratings' }, 0] },
+                then: { $avg: '$ratings.rating' },
+                else: 0
+              }
+            },
+            totalRatings: { $size: '$ratings' }
+          }
+        },
+        { $sort: { averageRating: sortOrder } },
+        { $skip: skip },
+        { $limit: limit },
+        {
+          $lookup: {
+            from: 'users',
+            localField: 'owner',
+            foreignField: '_id',
+            as: 'owner'
+          }
+        },
+        { $unwind: { path: '$owner', preserveNullAndEmptyArrays: true } },
+        {
+          $project: {
+            ratings: 0,
+            'owner.password': 0
+          }
+        }
+      ]);
+      
+    } else {
+      // Normal find for other sorting options
+      let sortObj = {};
+      sortObj[sortBy] = sortOrder;
+
+      stores = await Store.find(filter)
+        .sort(sortObj)
+        .skip(skip)
+        .limit(limit)
+        .populate('owner', 'name email')
+        .lean();
+
+      total = await Store.countDocuments(filter);
+      
+      // Get ratings for these stores
+      let storeIds = [];
+      for (let i = 0; i < stores.length; i++) {
+        storeIds.push(stores[i]._id);
+      }
+
+      const averageRatings = await Rating.aggregate([
+        { $match: { store: { $in: storeIds } } },
+        {
+          $group: {
+            _id: '$store',
+            averageRating: { $avg: '$rating' },
+            totalRatings: { $sum: 1 }
+          }
+        }
+      ]);
+
+      // Create a map of ratings
+      let averageRatingsMap = {};
+      for (let i = 0; i < averageRatings.length; i++) {
+        let rating = averageRatings[i];
+        let storeIdString = rating._id.toString();
+        averageRatingsMap[storeIdString] = {
+          averageRating: Math.round(rating.averageRating * 10) / 10,
+          totalRatings: rating.totalRatings
+        };
+      }
+
+      // Add ratings to stores
+      let storesWithRatings = [];
+      for (let i = 0; i < stores.length; i++) {
+        let store = stores[i];
+        let storeIdString = store._id.toString();
+        let ratingData = averageRatingsMap[storeIdString];
+        
+        let newStore = { ...store };
+        if (ratingData) {
+          newStore.averageRating = ratingData.averageRating;
+          newStore.totalRatings = ratingData.totalRatings;
+        } else {
+          newStore.averageRating = 0;
+          newStore.totalRatings = 0;
+        }
+        
+        storesWithRatings.push(newStore);
+      }
+      stores = storesWithRatings;
+    }
+
+    // Get current user's ratings for these stores
+    let currentStoreIds = [];
+    for (let i = 0; i < stores.length; i++) {
+      currentStoreIds.push(stores[i]._id);
+    }
+    
     const userRatings = await Rating.find({
       user: req.user.id,
-      store: { $in: storeIds }
-    });
+      store: { $in: currentStoreIds }
+    }).lean();
 
-    // Create a map of user ratings by store ID
-    const userRatingsMap = {};
-    userRatings.forEach(rating => {
-      userRatingsMap[rating.store.toString()] = rating;
-    });
+    // Create map of user ratings
+    let userRatingsMap = {};
+    for (let i = 0; i < userRatings.length; i++) {
+      let rating = userRatings[i];
+      let storeIdString = rating.store.toString();
+      userRatingsMap[storeIdString] = rating;
+    }
 
-    // Get average ratings for all stores
-    const averageRatings = await Rating.aggregate([
-      { $match: { store: { $in: storeIds } } },
-      {
-        $group: {
-          _id: '$store',
-          averageRating: { $avg: '$rating' },
-          totalRatings: { $sum: 1 }
-        }
+    // Add user ratings to stores
+    let finalStores = [];
+    for (let i = 0; i < stores.length; i++) {
+      let store = stores[i];
+      let storeIdString = store._id.toString();
+      
+      let avgRating = store.averageRating;
+      if (!avgRating) {
+        avgRating = 0;
       }
-    ]);
-
-    // Create a map of average ratings by store ID
-    const averageRatingsMap = {};
-    averageRatings.forEach(rating => {
-      averageRatingsMap[rating._id.toString()] = {
-        averageRating: Math.round(rating.averageRating * 10) / 10,
-        totalRatings: rating.totalRatings
+      avgRating = Math.round(avgRating * 10) / 10;
+      
+      let userRating = userRatingsMap[storeIdString];
+      if (!userRating) {
+        userRating = null;
+      }
+      
+      let finalStore = {
+        ...store,
+        averageRating: avgRating,
+        userRating: userRating
       };
-    });
+      
+      finalStores.push(finalStore);
+    }
 
-    // Add user ratings and average ratings to stores
-    const storesWithRatings = stores.map(store => {
-      const storeObj = store.toObject();
-      storeObj.userRating = userRatingsMap[store._id.toString()] || null;
-      storeObj.averageRating = averageRatingsMap[store._id.toString()]?.averageRating || 0;
-      storeObj.totalRatings = averageRatingsMap[store._id.toString()]?.totalRatings || 0;
-      return storeObj;
-    });
-
-    // Get total count
-    const total = await Store.countDocuments(filter);
+    // Calculate pagination info
+    let totalPages = Math.ceil(total / limit);
+    let hasNextPage = page < totalPages;
+    let hasPrevPage = page > 1;
 
     res.json({
       success: true,
       data: {
-        stores: storesWithRatings,
+        stores: finalStores,
         pagination: {
           currentPage: page,
-          totalPages: Math.ceil(total / limit),
+          totalPages: totalPages,
           totalStores: total,
-          hasNextPage: page < Math.ceil(total / limit),
-          hasPrevPage: page > 1
+          hasNextPage: hasNextPage,
+          hasPrevPage: hasPrevPage
         }
       }
     });
@@ -124,9 +266,7 @@ router.get('/stores', [
   }
 });
 
-// @desc    Submit or update rating for a store
-// @route   POST /api/user/stores/:storeId/rate
-// @access  Private (Authenticated users)
+// Submit or update a rating
 router.post('/stores/:storeId/rate', [
   body('rating')
     .isInt({ min: 1, max: 5 })
@@ -137,6 +277,7 @@ router.post('/stores/:storeId/rate', [
     .withMessage('Review cannot exceed 500 characters')
 ], async (req, res) => {
   try {
+    // Check for validation errors
     const errors = validationResult(req);
     if (!errors.isEmpty()) {
       return res.status(400).json({
@@ -146,23 +287,31 @@ router.post('/stores/:storeId/rate', [
       });
     }
 
-    const { rating, review } = req.body;
+    const rating = req.body.rating;
+    const review = req.body.review;
     const storeId = req.params.storeId;
 
-    // Check if store exists
+    // Check if store ID is valid
+    const isValidId = storeId.match(/^[0-9a-fA-F]{24}$/);
+    if (!isValidId) {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid store ID format'
+      });
+    }
+
+    // Find the store
     const store = await Store.findById(storeId);
     if (!store) {
       return res.status(404).json({
         success: false,
-        message: 'Store not found'
+        message: 'Store not found or is not active'
       });
     }
-
-    // Check if store is active
     if (!store.isActive) {
-      return res.status(400).json({
+      return res.status(404).json({
         success: false,
-        message: 'Store is not active'
+        message: 'Store not found or is not active'
       });
     }
 
@@ -178,21 +327,30 @@ router.post('/stores/:storeId/rate', [
     if (existingRating) {
       // Update existing rating
       existingRating.rating = rating;
-      existingRating.review = review || existingRating.review;
+      if (review !== undefined) {
+        existingRating.review = review;
+      }
       ratingDoc = await existingRating.save();
       message = 'Rating updated successfully';
     } else {
       // Create new rating
-      ratingDoc = await Rating.create({
+      let newRatingData = {
         user: req.user.id,
         store: storeId,
-        rating,
-        review
-      });
+        rating: rating
+      };
+      
+      if (review) {
+        newRatingData.review = review;
+      } else {
+        newRatingData.review = '';
+      }
+      
+      ratingDoc = await Rating.create(newRatingData);
       message = 'Rating submitted successfully';
     }
 
-    // Populate the rating with user and store info
+    // Populate user and store data
     await ratingDoc.populate([
       { path: 'user', select: 'name email' },
       { path: 'store', select: 'name email address' }
@@ -200,7 +358,7 @@ router.post('/stores/:storeId/rate', [
 
     res.json({
       success: true,
-      message,
+      message: message,
       data: ratingDoc
     });
   } catch (error) {
@@ -213,9 +371,7 @@ router.post('/stores/:storeId/rate', [
   }
 });
 
-// @desc    Get user's ratings
-// @route   GET /api/user/ratings
-// @access  Private (Authenticated users)
+// Get user's ratings
 router.get('/ratings', [
   query('page').optional().isInt({ min: 1 }).withMessage('Page must be a positive integer'),
   query('limit').optional().isInt({ min: 1, max: 100 }).withMessage('Limit must be between 1 and 100'),
@@ -223,6 +379,7 @@ router.get('/ratings', [
   query('sortOrder').optional().isIn(['asc', 'desc']).withMessage('Sort order must be asc or desc')
 ], async (req, res) => {
   try {
+    // Check validation errors
     const errors = validationResult(req);
     if (!errors.isEmpty()) {
       return res.status(400).json({
@@ -232,34 +389,63 @@ router.get('/ratings', [
       });
     }
 
-    const page = parseInt(req.query.page) || 1;
-    const limit = parseInt(req.query.limit) || 10;
-    const sortBy = req.query.sortBy || 'createdAt';
-    const sortOrder = req.query.sortOrder === 'asc' ? 1 : -1;
+    // Get query params
+    let page = req.query.page;
+    if (!page) {
+      page = 1;
+    }
+    page = parseInt(page);
 
-    // Calculate pagination
-    const skip = (page - 1) * limit;
+    let limit = req.query.limit;
+    if (!limit) {
+      limit = 10;
+    }
+    limit = parseInt(limit);
 
-    // Get user's ratings with pagination and sorting
+    let sortBy = req.query.sortBy;
+    if (!sortBy) {
+      sortBy = 'createdAt';
+    }
+
+    let sortOrder = req.query.sortOrder;
+    if (sortOrder === 'asc') {
+      sortOrder = 1;
+    } else {
+      sortOrder = -1;
+    }
+
+    let skip = (page - 1) * limit;
+
+    // Create sort object
+    let sortObj = {};
+    sortObj[sortBy] = sortOrder;
+
+    // Find user's ratings
     const ratings = await Rating.find({ user: req.user.id })
-      .sort({ [sortBy]: sortOrder })
+      .sort(sortObj)
       .skip(skip)
       .limit(limit)
-      .populate('store', 'name email address');
+      .populate('store', 'name email address')
+      .lean();
 
-    // Get total count
+    // Count total ratings
     const total = await Rating.countDocuments({ user: req.user.id });
+
+    // Calculate pagination
+    let totalPages = Math.ceil(total / limit);
+    let hasNextPage = page < totalPages;
+    let hasPrevPage = page > 1;
 
     res.json({
       success: true,
       data: {
-        ratings,
+        ratings: ratings,
         pagination: {
           currentPage: page,
-          totalPages: Math.ceil(total / limit),
+          totalPages: totalPages,
           totalRatings: total,
-          hasNextPage: page < Math.ceil(total / limit),
-          hasPrevPage: page > 1
+          hasNextPage: hasNextPage,
+          hasPrevPage: hasPrevPage
         }
       }
     });
@@ -273,11 +459,19 @@ router.get('/ratings', [
   }
 });
 
-// @desc    Delete user's rating
-// @route   DELETE /api/user/ratings/:ratingId
-// @access  Private (Authenticated users)
+// Delete a rating
 router.delete('/ratings/:ratingId', async (req, res) => {
   try {
+    // Check if rating ID is valid
+    const isValidId = req.params.ratingId.match(/^[0-9a-fA-F]{24}$/);
+    if (!isValidId) {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid rating ID format'
+      });
+    }
+
+    // Find the rating
     const rating = await Rating.findOne({
       _id: req.params.ratingId,
       user: req.user.id
@@ -290,6 +484,7 @@ router.delete('/ratings/:ratingId', async (req, res) => {
       });
     }
 
+    // Delete the rating
     await Rating.findByIdAndDelete(rating._id);
 
     res.json({
@@ -306,13 +501,22 @@ router.delete('/ratings/:ratingId', async (req, res) => {
   }
 });
 
-// @desc    Get store details with user's rating
-// @route   GET /api/user/stores/:storeId
-// @access  Private (Authenticated users)
+// Get store details
 router.get('/stores/:storeId', async (req, res) => {
   try {
+    // Validate store ID
+    const isValidId = req.params.storeId.match(/^[0-9a-fA-F]{24}$/);
+    if (!isValidId) {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid store ID format'
+      });
+    }
+
+    // Find store
     const store = await Store.findById(req.params.storeId)
-      .populate('owner', 'name email');
+      .populate('owner', 'name email')
+      .lean();
 
     if (!store) {
       return res.status(404).json({
@@ -332,9 +536,9 @@ router.get('/stores/:storeId', async (req, res) => {
     const userRating = await Rating.findOne({
       user: req.user.id,
       store: store._id
-    });
+    }).lean();
 
-    // Get average rating and total ratings
+    // Get rating statistics
     const ratingStats = await Rating.aggregate([
       { $match: { store: store._id } },
       {
@@ -346,14 +550,33 @@ router.get('/stores/:storeId', async (req, res) => {
       }
     ]);
 
-    const storeObj = store.toObject();
-    storeObj.userRating = userRating;
-    storeObj.averageRating = ratingStats.length > 0 ? Math.round(ratingStats[0].averageRating * 10) / 10 : 0;
-    storeObj.totalRatings = ratingStats.length > 0 ? ratingStats[0].totalRatings : 0;
+    // Get all ratings for this store
+    const allRatings = await Rating.find({ store: store._id })
+      .populate('user', 'name email')
+      .sort({ createdAt: -1 })
+      .limit(10)
+      .lean();
+
+    // Prepare response
+    let averageRating = 0;
+    let totalRatings = 0;
+    
+    if (ratingStats.length > 0) {
+      averageRating = Math.round(ratingStats[0].averageRating * 10) / 10;
+      totalRatings = ratingStats[0].totalRatings;
+    }
+
+    const storeWithRatings = {
+      ...store,
+      userRating: userRating,
+      averageRating: averageRating,
+      totalRatings: totalRatings,
+      recentRatings: allRatings
+    };
 
     res.json({
       success: true,
-      data: storeObj
+      data: storeWithRatings
     });
   } catch (error) {
     console.error('Get store details error:', error);
@@ -365,5 +588,52 @@ router.get('/stores/:storeId', async (req, res) => {
   }
 });
 
-module.exports = router;
+// Get user profile
+router.get('/profile', async (req, res) => {
+  try {
+    
+    const user = await User.findById(req.user.id).select('-password').lean(); 
 
+    if (!user) {
+        return res.status(404).json({ success: false, message: 'User not found' });
+    }
+
+    
+    const ratingCount = await Rating.countDocuments({ user: user._id });
+    
+    
+    const userRatings = await Rating.find({ user: user._id })
+      .populate('store', 'name email')
+      .sort({ createdAt: -1 })
+      .limit(5)
+      .lean();
+
+    
+    res.json({
+      success: true,
+      data: {
+        user: {
+          id: user._id,
+          name: user.name,
+          email: user.email,
+          address: user.address,
+          role: user.role,
+          createdAt: user.createdAt
+        },
+        statistics: {
+          totalRatings: ratingCount
+        },
+        recentRatings: userRatings
+      }
+    });
+  } catch (error) {
+    console.error('Get profile error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Server error',
+      error: error.message
+    });
+  }
+});
+
+module.exports = router;

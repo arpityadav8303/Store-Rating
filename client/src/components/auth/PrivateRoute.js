@@ -59,3 +59,4 @@ const PrivateRoute = function(props) {
 };
 
 export default PrivateRoute;
+

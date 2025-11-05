@@ -217,13 +217,8 @@ This will start both the backend server and frontend client concurrently.
 ✅ Pagination and sorting  
 ✅ Search and filtering  
 
-## Demo Accounts
 
-You can create demo accounts or use these sample credentials:
 
-- **Admin**: admin@example.com / Admin123!
-- **User**: user@example.com / User123!
-- **Store Owner**: owner@example.com / Owner123!
 
 ## Security Features
 
